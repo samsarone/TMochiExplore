@@ -74,6 +74,17 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (draftSessionId) {
+      const current = await authenticated.client.getV2StatusDetailed(draftSessionId);
+      const currentStatus = String(current.data?.status || "").trim().toUpperCase();
+      if (currentStatus !== "INIT" && currentStatus !== "DRAFT") {
+        return Response.json(
+          { error: "This session has already been submitted and cannot be submitted again." },
+          { status: 409, headers: { "Cache-Control": "no-store" } },
+        );
+      }
+    }
+
     const generationInput = {
       prompt,
       duration,

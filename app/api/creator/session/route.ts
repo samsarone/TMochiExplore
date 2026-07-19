@@ -6,14 +6,17 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
+export async function POST(request: Request) {
   const authenticated = await getAuthenticatedSamsarClient();
   if (!authenticated) return unauthorizedResponse();
 
   try {
-    const sessionId = await createBlankBranchedSession(authenticated);
+    const body = await request.json().catch(() => ({})) as { forceNew?: unknown };
+    const session = await createBlankBranchedSession(authenticated, {
+      forceNew: body.forceNew === true,
+    });
     return Response.json(
-      { sessionId, sessionType: "branched" },
+      { ...session, sessionType: "branched" },
       { status: 201, headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {

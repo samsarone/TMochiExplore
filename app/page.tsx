@@ -247,6 +247,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   const controlsTimerRef = useRef<number | null>(null);
   const choiceTransitionWatchRef = useRef<ChoiceTransitionWatch | null>(null);
   const presentedChoiceIdRef = useRef<string | null>(null);
+  const preloadedThumbnailUrlsRef = useRef(new Set<string>());
   const activePath = paths.find((path) => path.path_id === activePathId) ?? defaultPath;
 
   const nextChoice = useMemo(() => {
@@ -281,6 +282,20 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     if (!activePath) return bufferedPaths;
     return [activePath, ...bufferedPaths];
   }, [activePath, bufferedPaths]);
+
+  const nextChoiceThumbnailUrls = useMemo(() => {
+    if (!nextChoice) return [];
+
+    return [...new Set(nextChoice.options.map((option) => {
+      const target = pathForOption(
+        option,
+        paths,
+        activePathId,
+        publication.manifest.default_path_id,
+      );
+      return target?.thumbnailUrl || publication.mainThumbnailUrl || publication.thumbnailUrl;
+    }).filter((url): url is string => Boolean(url)))];
+  }, [activePathId, nextChoice, paths, publication.mainThumbnailUrl, publication.manifest.default_path_id, publication.thumbnailUrl]);
 
   const getActiveVideo = useCallback(
     () => videoElementsRef.current.get(activePathId) ?? null,
@@ -454,6 +469,27 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   ]);
 
   useEffect(() => clearChoiceTransitionWatch, [clearChoiceTransitionWatch]);
+
+  useEffect(() => {
+    if (
+      !nextChoice ||
+      nextChoice.switch_at_seconds - currentTime > CHOICE_PROMPT_LEAD_SECONDS
+    ) {
+      return;
+    }
+
+    nextChoiceThumbnailUrls.forEach((url) => {
+      if (preloadedThumbnailUrlsRef.current.has(url)) return;
+      preloadedThumbnailUrlsRef.current.add(url);
+
+      const image = new Image();
+      image.decoding = "async";
+      image.src = url;
+      if (typeof image.decode === "function") {
+        void image.decode().catch(() => undefined);
+      }
+    });
+  }, [currentTime, nextChoice, nextChoiceThumbnailUrls]);
 
   useEffect(() => {
     if (!nextChoice) return;
@@ -708,6 +744,9 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
 
         {mountedPaths.map((path) => {
           const isActive = path.path_id === activePathId;
+          const contentUrl = path.path_id === defaultPath.path_id
+            ? publication.mainVideoUrl || path.contentUrl
+            : path.contentUrl;
           return (
             <video
               key={path.path_id}
@@ -717,7 +756,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
               }}
               className={`player-video ${isActive ? "is-active" : "is-preloading"} ${isActive && switching ? "is-switching" : ""}`}
               data-path-id={path.path_id}
-              src={path.contentUrl}
+              src={contentUrl}
               poster={isActive ? publication.mainThumbnailUrl : undefined}
               preload="auto"
               playsInline
@@ -864,15 +903,21 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   );
 });
 
-export default function Home({ initialPublicationId }: { initialPublicationId?: string }) {
+export default function Home({
+  initialPublicationId,
+  initialPublication,
+}: {
+  initialPublicationId?: string;
+  initialPublication?: InteractivePublication;
+}) {
   const [response, setResponse] = useState<PublicationResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<InteractivePublication | null>(null);
+  const [selected, setSelected] = useState<InteractivePublication | null>(initialPublication ?? null);
   const [playerEntry, setPlayerEntry] = useState<PlayerEntry>(initialPublicationId ? "direct" : "internal");
-  const [routeLoading, setRouteLoading] = useState(Boolean(initialPublicationId));
+  const [routeLoading, setRouteLoading] = useState(Boolean(initialPublicationId && !initialPublication));
   const [routeError, setRouteError] = useState<string | null>(null);
   const [creatingSession, setCreatingSession] = useState(false);
   const playerHandleRef = useRef<InteractivePlayerHandle>(null);
@@ -968,7 +1013,7 @@ export default function Home({ initialPublicationId }: { initialPublicationId?: 
     };
 
     let active = true;
-    if (initialPublicationId) {
+    if (initialPublicationId && initialPublication?.id !== initialPublicationId) {
       queueMicrotask(() => {
         if (active) void loadPublicationRoute(initialPublicationId);
       });
@@ -978,7 +1023,7 @@ export default function Home({ initialPublicationId }: { initialPublicationId?: 
       active = false;
       window.removeEventListener("popstate", syncPlayerRoute);
     };
-  }, [clearPlayerRoute, initialPublicationId, loadPublicationRoute]);
+  }, [clearPlayerRoute, initialPublication?.id, initialPublicationId, loadPublicationRoute]);
 
   const isPrototype = !loading && !error && response?.items.length === 0;
   const publications = isPrototype ? [demoPublication] : response?.items ?? [];
@@ -1033,6 +1078,7 @@ export default function Home({ initialPublicationId }: { initialPublicationId?: 
       const response = await fetch("/api/creator/session", { method: "POST" });
       const result = await response.json().catch(() => null) as {
         sessionId?: string;
+        status?: string;
       } | null;
       if (response.status === 401) {
         window.location.assign("/creator");
@@ -1041,8 +1087,9 @@ export default function Home({ initialPublicationId }: { initialPublicationId?: 
       if (!response.ok || !result?.sessionId) {
         throw new Error("Unable to create a Creator Studio session.");
       }
+      const isDraft = result.status?.toUpperCase() === "INIT";
       window.location.assign(
-        `/creator/${encodeURIComponent(result.sessionId)}?draft=1`,
+        `/creator/${encodeURIComponent(result.sessionId)}${isDraft ? "?draft=1" : ""}`,
       );
     } catch {
       window.location.assign("/creator");

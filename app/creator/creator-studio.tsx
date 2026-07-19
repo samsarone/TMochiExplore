@@ -39,8 +39,8 @@ import {
   VIDEO_MODELS,
   estimateInteractiveCredits,
 } from "../../lib/creator-config";
-import { BranchPreview } from "./branch-preview";
-import { BranchTree } from "./branch-tree";
+import { BranchPreview, type BranchPreviewHandle } from "./branch-preview";
+import { BranchTree, type BranchLayerSelection } from "./branch-tree";
 import { CompletedPlayer } from "./completed-player";
 import { CreatorBrand } from "./creator-brand";
 import PublishDialog from "./publish-dialog";
@@ -80,6 +80,34 @@ type StoredCreatorState = {
 
 const POLL_INTERVAL_MS = 5_000;
 const MAX_POLL_BACKOFF_MS = 60_000;
+const COMPLETED_STAGE_STATUSES = new Set(["COMPLETED", "DONE", "SUCCESS", "SUCCEEDED"]);
+const PIPELINE_STAGE_ORDER = [
+  "prompt_generation",
+  "image_generation",
+  "speech_generation",
+  "music_generation",
+  "audio_generation",
+  "ai_video_generation",
+  "lip_sync_generation",
+  "sound_effect_generation",
+  "narrator_avatar_generation",
+  "delete_reflow",
+  "timeline_reflowed",
+  "transcript_generation",
+  "frame_generation",
+  "video_generation",
+] as const;
+// Creator progress intentionally tracks a small set of aggregate checkpoints.
+// A checkpoint only advances after the whole session (including every branch)
+// has completed it; individual layers and paths never contribute fractions.
+const CREATOR_PROGRESS_STAGES = [
+  "prompt_generation",
+  "image_generation",
+  "audio_generation",
+  "ai_video_generation",
+  "frame_generation",
+  "video_generation",
+] as const;
 const ARTIFACT_MEDIA_KEYS = new Set([
   "url",
   "resulturl",
@@ -110,6 +138,21 @@ function isFailed(status: CreatorStatus | null) {
   return normalized === "FAILED" || normalized === "CANCELLED";
 }
 
+function isInitSession(status: CreatorStatus | null, allowLegacyDraft = false) {
+  const normalized = status?.status?.toUpperCase();
+  if (normalized === "INIT" || normalized === "DRAFT") return true;
+  if (!allowLegacyDraft || normalized !== "PENDING") return false;
+
+  const responseRecord = status as Record<string, unknown> | null;
+  const prompt = status?.session?.inputPrompt ?? responseRecord?.input_prompt ?? responseRecord?.prompt;
+  return !(
+    (typeof prompt === "string" && prompt.trim()) ||
+    status?.session?.layers?.length ||
+    status?.session?.audioLayers?.length ||
+    getBranching(status)?.paths?.length
+  );
+}
+
 function statusMessage(status: CreatorStatus | null) {
   if (!status) return null;
   return status.expressGenerationError || status.message || null;
@@ -135,21 +178,77 @@ function resolveStage(status: CreatorStatus | null, hasRequest: boolean) {
   if (isFailed(status)) return "Generation stopped";
   const sessionStage = status.session?.currentStage || status.session?.previewStage;
   const stage = String(sessionStage || "").toLowerCase();
-  if (stage.includes("frame")) return "Rendering branch frames";
-  if (stage.includes("video")) return "Encoding branch films";
-  if (stage.includes("audio") || stage.includes("speech")) return "Building spatial audio";
+  if (stage === "prompt_generation") return "Writing the interactive narrative";
+  if (stage === "image_generation") return "Generating branch imagery";
+  if (["speech_generation", "music_generation", "audio_generation"].includes(stage)) {
+    return "Building spatial audio";
+  }
+  if (stage === "ai_video_generation") return "Animating branch scenes";
+  if (["lip_sync_generation", "sound_effect_generation", "narrator_avatar_generation"].includes(stage)) {
+    return "Finishing branch media";
+  }
+  if (["delete_reflow", "timeline_reflowed", "transcript_generation"].includes(stage)) {
+    return "Assembling branch timelines";
+  }
+  if (stage === "frame_generation") return "Rendering branch frames";
+  if (stage === "video_generation") return "Encoding branch films";
   if (getBranching(status)?.paths?.length) return "Materializing the branch tree";
   return "Writing the interactive narrative";
 }
 
+function normalizedStageStatus(value: unknown) {
+  if (value && typeof value === "object" && "status" in value) {
+    return String((value as { status?: unknown }).status || "").trim().toUpperCase();
+  }
+  return String(value || "").trim().toUpperCase();
+}
+
+function aggregateStageCompleted(status: CreatorStatus, stage: string) {
+  const branching = getBranching(status);
+  if (stage === "frame_generation" && branching?.paths?.length) {
+    const allBranchFramesComplete = branching.paths.every((path) => {
+      const frameStatus = normalizedStageStatus(path.stages?.frame_generation);
+      return COMPLETED_STAGE_STATUSES.has(frameStatus) ||
+        COMPLETED_STAGE_STATUSES.has(normalizedStageStatus(path.status));
+    });
+    if (!allBranchFramesComplete) return false;
+  }
+  if (stage === "video_generation" && branching?.paths?.length) {
+    const allBranchVideosComplete = branching.paths.every((path) => {
+      const videoStatus = normalizedStageStatus(path.stages?.video_generation);
+      return COMPLETED_STAGE_STATUSES.has(videoStatus) ||
+        COMPLETED_STAGE_STATUSES.has(normalizedStageStatus(path.status));
+    });
+    if (!allBranchVideosComplete) return false;
+  }
+
+  const completedStages = status.session?.completedStages ?? [];
+  if (completedStages.some((completedStage) => String(completedStage).trim().toLowerCase() === stage)) {
+    return true;
+  }
+
+  const stageStatus = status.session?.stages?.[stage];
+  if (COMPLETED_STAGE_STATUSES.has(normalizedStageStatus(stageStatus))) return true;
+  if (stageStatus !== undefined && stageStatus !== null) return false;
+
+  // Older detailed responses may expose only currentStage. Because currentStage
+  // is the first unfinished aggregate stage, every preceding stage is complete.
+  const currentStage = String(status.session?.currentStage || "").trim().toLowerCase();
+  const currentIndex = PIPELINE_STAGE_ORDER.indexOf(currentStage as typeof PIPELINE_STAGE_ORDER[number]);
+  const targetIndex = PIPELINE_STAGE_ORDER.indexOf(stage as typeof PIPELINE_STAGE_ORDER[number]);
+  return currentIndex > targetIndex && targetIndex >= 0;
+}
+
 function resolveProgress(status: CreatorStatus | null) {
   if (isCompleted(status)) return 100;
-  const summary = getBranching(status)?.summary;
-  if (Number.isFinite(Number(summary?.progress_percent))) {
-    return Math.min(99, Math.max(2, Number(summary?.progress_percent)));
+  if (!status) return 0;
+
+  let completedStages = 0;
+  for (const stage of CREATOR_PROGRESS_STAGES) {
+    if (!aggregateStageCompleted(status, stage)) break;
+    completedStages += 1;
   }
-  if (status?.session?.layers?.length) return 28;
-  return status ? 9 : 3;
+  return Math.min(99, (completedStages / CREATOR_PROGRESS_STAGES.length) * 100);
 }
 
 function resolveCreditsCharged(status: CreatorStatus | null) {
@@ -273,7 +372,10 @@ export default function CreatorStudio({
   const [status, setStatus] = useState<CreatorStatus | null>(null);
   const [lastDetailedSnapshot, setLastDetailedSnapshot] = useState<CreatorStatus | null>(null);
   const [activePathId, setActivePathId] = useState<string | null>(null);
+  const [previewSeekTarget, setPreviewSeekTarget] = useState<BranchLayerSelection | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [creatingDraft, setCreatingDraft] = useState(false);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [polling, setPolling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [playerOpen, setPlayerOpen] = useState(false);
@@ -281,6 +383,7 @@ export default function CreatorStudio({
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const latestRequestRef = useRef("");
+  const branchPreviewRef = useRef<BranchPreviewHandle | null>(null);
   const pendingSubmissionRef = useRef<PendingGenerationSubmission | null>(null);
   const draftCreationRef = useRef(false);
   const storageScope = initialUser.id || initialUser.email || initialUser.username || "creator";
@@ -291,6 +394,11 @@ export default function CreatorStudio({
     [form.duration, form.levels, form.videoModel],
   );
   const branching = getBranching(status) ?? getBranching(lastDetailedSnapshot);
+  const branchLayerCount = new Set(
+    (branching?.paths ?? []).flatMap((path) =>
+      (path.timeline ?? []).map((item) => item.layer_id ?? `scene-${item.scene_index ?? item.sequence_index}`),
+    ),
+  ).size;
   const complete = renderStarted && isCompleted(status);
   const failed = renderStarted && isFailed(status);
   const inProgress = renderStarted && !complete && !failed;
@@ -328,6 +436,7 @@ export default function CreatorStudio({
         const response = await fetch("/api/creator/session", { method: "POST" });
         const result = await response.json().catch(() => null) as {
           sessionId?: string;
+          status?: string;
           error?: string;
         } | null;
         if (response.status === 401) {
@@ -338,8 +447,11 @@ export default function CreatorStudio({
           throw new Error(result?.error || "Unable to create a Creator Studio session.");
         }
         setRequestId(result.sessionId);
-        setIsDraft(true);
-        router.replace(`/creator/${encodeURIComponent(result.sessionId)}?draft=1`, {
+        const nextIsDraft = result.status?.toUpperCase() === "INIT";
+        setIsDraft(nextIsDraft);
+        setRenderStarted(!nextIsDraft);
+        setSessionChecked(true);
+        router.replace(`/creator/${encodeURIComponent(result.sessionId)}${nextIsDraft ? "?draft=1" : ""}`, {
           scroll: false,
         });
       } catch (draftError) {
@@ -371,7 +483,7 @@ export default function CreatorStudio({
           ? { id: pending.id.trim(), fingerprint: pending.fingerprint }
           : null;
       window.setTimeout(() => {
-        if (savedForm) setForm(savedForm);
+        if (savedForm) setForm({ ...savedForm, prompt: "" });
         pendingSubmissionRef.current = savedPending;
       }, 0);
     } catch {
@@ -381,7 +493,7 @@ export default function CreatorStudio({
 
   useEffect(() => {
     latestRequestRef.current = requestId;
-    if (!requestId || isDraft) {
+    if (!requestId) {
       return;
     }
 
@@ -422,6 +534,9 @@ export default function CreatorStudio({
             status: "FAILED",
             message: permanentMessage,
           } as CreatorStatus);
+          setIsDraft(false);
+          setRenderStarted(true);
+          setSessionChecked(true);
           setError(permanentMessage);
           setPolling(false);
           return;
@@ -432,7 +547,11 @@ export default function CreatorStudio({
         if (disposed || latestRequestRef.current !== requestId) return;
 
         consecutiveErrors = 0;
+        const nextIsInit = isInitSession(next, initialDraft);
         setStatus(next);
+        setIsDraft(nextIsInit);
+        setRenderStarted(!nextIsInit);
+        setSessionChecked(true);
         setError(null);
         const responseRecord = next as Record<string, unknown>;
         const sessionRecord = next.session as Record<string, unknown> | null | undefined;
@@ -446,24 +565,26 @@ export default function CreatorStudio({
           next.session?.inputPrompt ?? responseRecord.input_prompt ?? responseRecord.prompt;
         const nextDuration = next.session?.duration ?? responseRecord.duration;
         const nextLevels = getBranching(next)?.tree.num_levels;
-        setForm((current) => ({
-          prompt:
-            typeof nextPrompt === "string" && nextPrompt.trim()
-              ? nextPrompt
-              : current.prompt,
-          duration: Number.isFinite(Number(nextDuration))
-            ? Math.min(180, Math.max(30, Number(nextDuration)))
-            : current.duration,
-          imageModel: IMAGE_MODELS.some((model) => model.value === nextImageModel)
-            ? nextImageModel as TextToInteractiveVideoImageModel
-            : current.imageModel,
-          videoModel: VIDEO_MODELS.some((model) => model.value === nextVideoModel)
-            ? nextVideoModel as ExternalNarrativeVideoModel
-            : current.videoModel,
-          levels: Number.isInteger(Number(nextLevels))
-            ? Math.min(3, Math.max(1, Number(nextLevels)))
-            : current.levels,
-        }));
+        setForm((current) => nextIsInit
+          ? { ...current, prompt: "" }
+          : {
+              prompt:
+                typeof nextPrompt === "string" && nextPrompt.trim()
+                  ? nextPrompt
+                  : current.prompt,
+              duration: Number.isFinite(Number(nextDuration))
+                ? Math.min(180, Math.max(30, Number(nextDuration)))
+                : current.duration,
+              imageModel: IMAGE_MODELS.some((model) => model.value === nextImageModel)
+                ? nextImageModel as TextToInteractiveVideoImageModel
+                : current.imageModel,
+              videoModel: VIDEO_MODELS.some((model) => model.value === nextVideoModel)
+                ? nextVideoModel as ExternalNarrativeVideoModel
+                : current.videoModel,
+              levels: Number.isInteger(Number(nextLevels))
+                ? Math.min(3, Math.max(1, Number(nextLevels)))
+                : current.levels,
+            });
         if (
           next.session?.layers?.length ||
           next.session?.audioLayers?.length ||
@@ -477,7 +598,7 @@ export default function CreatorStudio({
           setUser((current) => ({ ...current, generationCredits: next.creditsRemaining as number }));
         }
 
-        const terminal = isCompleted(next) || isFailed(next);
+        const terminal = nextIsInit || isCompleted(next) || isFailed(next);
         if (terminal) {
           setPolling(false);
           void refreshUser();
@@ -492,6 +613,7 @@ export default function CreatorStudio({
         if (disposed) return;
         consecutiveErrors += 1;
         setPolling(false);
+        setSessionChecked(false);
         setError(pollError instanceof Error ? pollError.message : "The render status is temporarily unavailable.");
         const delay = Math.min(
           MAX_POLL_BACKOFF_MS,
@@ -506,10 +628,14 @@ export default function CreatorStudio({
       disposed = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [isDraft, refreshUser, requestId]);
+  }, [initialDraft, refreshUser, requestId]);
 
   async function generate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!sessionChecked || !isDraft || renderStarted || (status && !isInitSession(status, initialDraft))) {
+      setError("Only a new, unsubmitted session can start a generation.");
+      return;
+    }
     if (!form.prompt.trim()) {
       setError("Describe the story you want to create.");
       return;
@@ -576,6 +702,16 @@ export default function CreatorStudio({
       }
       if (!response.ok) {
         const generationMessage = result?.error || "Unable to start this generation.";
+        if (response.status === 409 && submittedDraftId) {
+          setIsDraft(false);
+          setRenderStarted(true);
+          setStatus({
+            request_id: submittedDraftId,
+            status: "PENDING",
+            message: generationMessage,
+          } as CreatorStatus);
+          router.replace(`/creator/${encodeURIComponent(submittedDraftId)}`, { scroll: false });
+        }
         if (
           generationMessage.toLowerCase().includes("insufficient") &&
           generationMessage.toLowerCase().includes("credit")
@@ -623,17 +759,19 @@ export default function CreatorStudio({
   }
 
   async function newDraft() {
-    window.localStorage.removeItem(creatorStorageKey);
-    pendingSubmissionRef.current = null;
-    setStatus(null);
-    setLastDetailedSnapshot(null);
-    setActivePathId(null);
-    setError(null);
-    setPlayerOpen(false);
-    setPublishOpen(false);
-    setRenderStarted(false);
+    if (creatingDraft || generating) return;
+    setCreatingDraft(true);
+    const reusableSettings = { ...form, prompt: "" };
+    window.localStorage.setItem(creatorStorageKey, JSON.stringify({
+      version: 2,
+      form: reusableSettings,
+    } satisfies StoredCreatorState));
     try {
-      const response = await fetch("/api/creator/session", { method: "POST" });
+      const response = await fetch("/api/creator/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ forceNew: true }),
+      });
       const result = await response.json().catch(() => null) as {
         sessionId?: string;
         error?: string;
@@ -641,11 +779,24 @@ export default function CreatorStudio({
       if (!response.ok || !result?.sessionId) {
         throw new Error(result?.error || "Unable to create a new draft.");
       }
+      pendingSubmissionRef.current = null;
+      setForm(reusableSettings);
+      setStatus(null);
+      setLastDetailedSnapshot(null);
+      setActivePathId(null);
+      setPreviewSeekTarget(null);
+      setError(null);
+      setPlayerOpen(false);
+      setPublishOpen(false);
+      setRenderStarted(false);
       setRequestId(result.sessionId);
       setIsDraft(true);
+      setSessionChecked(true);
       router.push(`/creator/${encodeURIComponent(result.sessionId)}?draft=1`);
     } catch (draftError) {
       setError(draftError instanceof Error ? draftError.message : "Unable to create a new draft.");
+    } finally {
+      setCreatingDraft(false);
     }
   }
 
@@ -771,6 +922,15 @@ export default function CreatorStudio({
           <div>
             <strong>Creator Studio</strong>
           </div>
+          <button
+            className={styles.createNewButton}
+            type="button"
+            onClick={() => void newDraft()}
+            disabled={creatingDraft || generating}
+          >
+            {creatingDraft ? <LoaderCircle className={styles.spin} size={13} /> : <Plus size={13} />}
+            Create new
+          </button>
         </div>
         <div className={styles.creditCluster}>
           <div className={`${styles.estimateCard} ${balanceMayBeShort ? styles.estimateWarning : ""}`}>
@@ -905,18 +1065,28 @@ export default function CreatorStudio({
               </div>
             )}
 
-            {!renderStarted ? (
-              <button className={styles.generateButton} type="submit" disabled={generating || !form.prompt.trim()}>
+            <button
+              className={styles.generateButton}
+              type="submit"
+              disabled={generating || !form.prompt.trim() || !sessionChecked || !isDraft || renderStarted}
+            >
                 {generating ? <LoaderCircle className={styles.spin} size={18} /> : <Sparkles size={18} />}
-                <span>{generating ? "Opening render graph" : "Generate interactive film"}</span>
-                {!generating && <Zap size={15} />}
-              </button>
-            ) : (
+                <span>{generating
+                  ? "Opening render graph"
+                  : !sessionChecked
+                    ? "Checking session"
+                    : inProgress
+                      ? "Generation in progress"
+                      : complete
+                        ? "Generation complete"
+                        : failed
+                          ? "Session unavailable"
+                          : "Generate interactive film"}</span>
+                {!generating && !renderStarted && <Zap size={15} />}
+            </button>
+            {renderStarted && (
               <div className={styles.activeRequestActions}>
-                <button className={styles.secondaryButton} type="button" onClick={newDraft} disabled={inProgress}>
-                  <Plus size={15} /> New draft
-                </button>
-                {inProgress && <span><LoaderCircle className={styles.spin} size={13} /> Generation locked while rendering</span>}
+                <span>{inProgress && <LoaderCircle className={styles.spin} size={13} />} This session cannot be submitted again</span>
               </div>
             )}
             <p className={styles.estimateNote}>Estimate uses the selected model’s full rate and assumes every leaf spans the maximum duration. The API charges the exact unique branch duration.</p>
@@ -961,18 +1131,35 @@ export default function CreatorStudio({
                 <div className={styles.treeSection}>
                   <div className={styles.sectionLabel}>
                     <span>Branch topology</span>
-                    <small>{branching?.tree.num_levels ? `${branching.tree.num_levels} levels` : "Mapping story graph"}</small>
+                    <small>
+                      {branchLayerCount > 0
+                        ? `${branchLayerCount} layers · click any scene to preview`
+                        : branching?.tree.num_levels
+                          ? `${branching.tree.num_levels} levels`
+                          : "Mapping story graph"}
+                    </small>
                   </div>
-                  <BranchTree branching={branching} activePathId={activePathId} />
+                  <BranchTree
+                    branching={branching}
+                    layers={(lastDetailedSnapshot || status)?.session?.layers ?? []}
+                    activePathId={activePathId}
+                    selectedLayerKey={previewSeekTarget?.key}
+                    onLayerSelect={(selection) => {
+                      setActivePathId(selection.pathId);
+                      setPreviewSeekTarget(selection);
+                      branchPreviewRef.current?.seekTo(selection);
+                    }}
+                  />
                 </div>
 
                 {!complete && !failed && (
                   <div className={styles.livePreviewSection}>
                     <div className={styles.sectionLabel}>
-                      <span>Random path preview</span>
-                      <small>Each run selects one available ending</small>
+                      <span>Branch media preview</span>
+                      <small>Click a layer above or play a random ending</small>
                     </div>
                     <BranchPreview
+                      ref={branchPreviewRef}
                       status={(lastDetailedSnapshot || status) as GlobalStatusDetailedResponse}
                       selectedPathId={activePathId}
                       onPathChange={setActivePathId}
@@ -997,7 +1184,7 @@ export default function CreatorStudio({
                 {complete && defaultOutput && (
                   <div className={styles.completedPreview}>
                     <div className={styles.completedMedia}>
-                      <video src={defaultOutput.url} poster={defaultOutput.thumbnail_url} preload="metadata" muted playsInline />
+                      <video src={defaultOutput.url} poster={defaultOutput.thumbnail_url} preload="auto" muted playsInline />
                       <span className={styles.completedShade} />
                       <button type="button" onClick={() => setPlayerOpen(true)} aria-label="Play interactive preview">
                         <Play size={24} fill="currentColor" />

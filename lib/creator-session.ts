@@ -4,18 +4,25 @@ type BranchedDraftSessionResponse = {
   request_id?: string;
   status?: string;
   narrative_type?: string;
+  resumed?: boolean;
 };
 
 export async function createBlankBranchedSession(
   authenticated: AuthenticatedSamsarClient,
+  { forceNew = false }: { forceNew?: boolean } = {},
 ) {
   const result = await authenticated.client.postV2<BranchedDraftSessionResponse>(
     "text_to_interactive_video/session",
-    {},
+    forceNew ? { input: { force_new: true } } : {},
   );
   const sessionId = result.data.session_id || result.data.request_id;
   if (!sessionId?.trim()) {
     throw new Error("Samsar did not return a Creator Studio session ID.");
   }
-  return sessionId.trim();
+  const normalizedStatus = result.data.status?.trim().toUpperCase();
+  return {
+    sessionId: sessionId.trim(),
+    status: normalizedStatus === "DRAFT" ? "INIT" : normalizedStatus || "INIT",
+    resumed: result.data.resumed === true,
+  };
 }

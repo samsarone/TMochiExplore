@@ -9,7 +9,7 @@ import type {
   VideoSessionPreviewAudioLayer,
   VideoSessionPreviewLayer,
 } from "samsar-js";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 import styles from "./creator.module.css";
 
@@ -19,6 +19,17 @@ export interface BranchPreviewProps {
   onPathChange?: (pathId: string) => void;
 }
 
+export type BranchPreviewSeekTarget = {
+  pathId: string;
+  layerId?: string;
+  sequenceIndex: number;
+  startTime: number;
+};
+
+export type BranchPreviewHandle = {
+  seekTo: (target: BranchPreviewSeekTarget) => void;
+};
+
 type PreviewAsset = {
   kind: "image" | "video";
   url: string;
@@ -27,6 +38,7 @@ type PreviewAsset = {
 
 type PreviewScene = {
   key: string;
+  layerId?: string;
   sequenceIndex: number;
   sceneIndex?: number;
   startTime: number;
@@ -251,6 +263,7 @@ function materializeDiagnosticPath(
     return [
       {
         key: `${path.path_id}:${item.sequence_index}:${layerId ?? layer.index}`,
+        layerId,
         sequenceIndex: item.sequence_index,
         sceneIndex: item.scene_index,
         startTime,
@@ -396,11 +409,11 @@ function formatDuration(seconds: number): string {
   return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, "0")}`;
 }
 
-export function BranchPreview({
+export const BranchPreview = forwardRef<BranchPreviewHandle, BranchPreviewProps>(function BranchPreview({
   status,
   selectedPathId,
   onPathChange,
-}: BranchPreviewProps) {
+}, ref) {
   const playablePaths = useMemo(() => materializePaths(status), [status]);
   const preferredPath =
     playablePaths.find((path) => path.id === selectedPathId) ??
@@ -434,10 +447,7 @@ export function BranchPreview({
     else audioRefs.current.delete(key);
   }, []);
 
-  const startPreview = useCallback(() => {
-    const nextPath = chooseRandomPath(playablePaths, playbackPath?.id);
-    if (!nextPath) return;
-
+  const playPathFromScene = useCallback((nextPath: PlayablePath, sceneIndex: number) => {
     stopMedia();
     // Prime every audio element inside the click gesture so later scene cues can play.
     nextPath.audio.forEach((cue) => {
@@ -453,12 +463,32 @@ export function BranchPreview({
 
     setActivePathId(nextPath.id);
     setPlaybackPath(nextPath);
-    setActiveSceneIndex(0);
+    setActiveSceneIndex(Math.max(0, Math.min(sceneIndex, nextPath.scenes.length - 1)));
     setPlaybackRun((run) => run + 1);
     setPlaybackNotice(null);
     setIsPlaying(true);
     onPathChange?.(nextPath.id);
-  }, [onPathChange, playablePaths, playbackPath?.id, stopMedia]);
+  }, [onPathChange, stopMedia]);
+
+  const startPreview = useCallback(() => {
+    const nextPath = chooseRandomPath(playablePaths, playbackPath?.id);
+    if (!nextPath) return;
+    playPathFromScene(nextPath, 0);
+  }, [playablePaths, playbackPath?.id, playPathFromScene]);
+
+  useImperativeHandle(ref, () => ({
+    seekTo(target) {
+      const targetPath = playablePaths.find((path) => path.id === target.pathId);
+      if (!targetPath) return;
+      const targetSceneIndex = targetPath.scenes.findIndex((scene) =>
+        (target.layerId && scene.layerId === target.layerId) ||
+        scene.sequenceIndex === target.sequenceIndex ||
+        Math.abs(scene.startTime - target.startTime) < 0.02,
+      );
+      if (targetSceneIndex < 0) return;
+      playPathFromScene(targetPath, targetSceneIndex);
+    },
+  }), [playPathFromScene, playablePaths]);
 
   useEffect(() => {
     if (!isPlaying || !activePath || !activeScene) return undefined;
@@ -725,6 +755,6 @@ export function BranchPreview({
       )}
     </section>
   );
-}
+});
 
 export default BranchPreview;

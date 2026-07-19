@@ -1,6 +1,10 @@
 "use client";
 
-import type { NarrativeVideoBranchingStatus } from "samsar-js";
+import type {
+  NarrativeVideoBranchingStatus,
+  NarrativeVideoBranchStageDetail,
+  VideoSessionPreviewLayer,
+} from "samsar-js";
 import type { ReactNode } from "react";
 
 import styles from "./creator.module.css";
@@ -8,6 +12,17 @@ import styles from "./creator.module.css";
 type BranchTreeProps = {
   branching: NarrativeVideoBranchingStatus | null;
   activePathId?: string | null;
+  layers?: VideoSessionPreviewLayer[];
+  selectedLayerKey?: string | null;
+  onLayerSelect?: (selection: BranchLayerSelection) => void;
+};
+
+export type BranchLayerSelection = {
+  key: string;
+  pathId: string;
+  layerId?: string;
+  sequenceIndex: number;
+  startTime: number;
 };
 
 type ChoicePoint = NonNullable<
@@ -42,6 +57,22 @@ type NodeStatus = {
   tone: "ready" | "pending" | "paused" | "failed" | "cancelled";
 };
 
+type LayerPathTiming = {
+  pathId: string;
+  startTime: number;
+};
+
+type LayerTreeNode = {
+  key: string;
+  layerId?: string;
+  sequenceIndex: number;
+  sceneIndex?: number;
+  title: string;
+  pathTimings: LayerPathTiming[];
+  frameStatuses: NarrativeVideoBranchStageDetail[];
+  children: Map<string, LayerTreeNode>;
+};
+
 const READY_STATUSES = new Set(["COMPLETED", "READY", "SUCCEEDED", "SUCCESS"]);
 const FAILED_STATUSES = new Set(["FAILED", "ERROR"]);
 const CANCELLED_STATUSES = new Set(["CANCELLED", "CANCELED"]);
@@ -59,8 +90,61 @@ const edgeKey = (parentId: string, nodeId: string) => `${parentId}\u0000${nodeId
 
 const pathCountLabel = (count: number) => `${count} ${count === 1 ? "path" : "paths"}`;
 
+const formatTimestamp = (seconds: number) => {
+  const wholeSeconds = Math.max(0, Math.round(seconds));
+  return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, "0")}`;
+};
+
 const safeLabel = (value: unknown) =>
   typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+function buildLayerTree(
+  branching: NarrativeVideoBranchingStatus,
+  layers: VideoSessionPreviewLayer[],
+) {
+  const root = new Map<string, LayerTreeNode>();
+  const layersById = new Map<string, VideoSessionPreviewLayer>();
+  layers.forEach((layer) => {
+    const id = safeLabel(layer.id ?? undefined);
+    if (id) layersById.set(id, layer);
+  });
+
+  (branching.paths ?? [])
+    .slice()
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .forEach((path) => {
+      let children = root;
+      [...(path.timeline ?? [])]
+        .sort((left, right) => left.sequence_index - right.sequence_index)
+        .forEach((item) => {
+          const layerId = safeLabel(item.layer_id);
+          const identity = layerId ?? `scene-${item.scene_index ?? item.sequence_index}`;
+          const key = `${identity}:${item.sequence_index}`;
+          let node = children.get(key);
+          if (!node) {
+            const layer = layerId
+              ? layersById.get(layerId)
+              : layers.find((candidate) => candidate.index === item.scene_index);
+            node = {
+              key,
+              layerId,
+              sequenceIndex: item.sequence_index,
+              sceneIndex: item.scene_index,
+              title: safeLabel(layer?.prompt) ?? `Scene ${item.sequence_index + 1}`,
+              pathTimings: [],
+              frameStatuses: [],
+              children: new Map(),
+            };
+            children.set(key, node);
+          }
+          node.pathTimings.push({ pathId: path.path_id, startTime: item.start_time });
+          node.frameStatuses.push(item.frame_generation);
+          children = node.children;
+        });
+    });
+
+  return root;
+}
 
 const statusForPaths = (
   paths: PathProgress[],
@@ -98,7 +182,13 @@ const statusForPaths = (
   return { label: "Rendering", tone: "pending" };
 };
 
-export function BranchTree({ branching, activePathId = null }: BranchTreeProps) {
+export function BranchTree({
+  branching,
+  activePathId = null,
+  layers = [],
+  selectedLayerKey = null,
+  onLayerSelect,
+}: BranchTreeProps) {
   if (!branching) {
     return (
       <div className={styles.branchTreeScroller}>
@@ -308,6 +398,109 @@ export function BranchTree({ branching, activePathId = null }: BranchTreeProps) 
     });
   });
 
+  const layerTree = buildLayerTree(branching, layers);
+  const hasLayerTree = layerTree.size > 0;
+
+  const renderLayerNode = (node: LayerTreeNode, depth: number): ReactNode => {
+    const pathIds = distinct(node.pathTimings.map((timing) => timing.pathId));
+    const selectedTiming =
+      node.pathTimings.find((timing) => timing.pathId === normalizedActivePathId) ??
+      node.pathTimings[0];
+    const isActive = Boolean(normalizedActivePathId && pathIds.includes(normalizedActivePathId));
+    const isSelected = selectedLayerKey === node.key && isActive;
+    const allFramesReady = node.frameStatuses.length > 0 && node.frameStatuses.every((detail) =>
+      READY_STATUSES.has(normalizedStatus(detail?.status)),
+    );
+    const anyFrameFailed = node.frameStatuses.some((detail) =>
+      FAILED_STATUSES.has(normalizedStatus(detail?.status)),
+    );
+    const childNodes = [...node.children.values()];
+    const layerStatus = anyFrameFailed
+      ? { label: "Failed", tone: "failed" as const }
+      : allFramesReady
+        ? { label: "Ready", tone: "ready" as const }
+        : { label: "Rendering", tone: "pending" as const };
+
+    return (
+      <div
+        className={classNames(
+          styles.branchNode,
+          childNodes.length === 0 && styles.branchNodeLeaf,
+          isActive && styles.active,
+        )}
+        key={node.key}
+        role="treeitem"
+        aria-level={depth + 1}
+        aria-expanded={childNodes.length > 0 ? true : undefined}
+        aria-selected={isSelected}
+        aria-current={isSelected ? "step" : undefined}
+      >
+        <button
+          className={classNames(
+            styles.branchNodeCard,
+            styles.layerNodeCard,
+            isActive && styles.active,
+            isSelected && styles.layerNodeSelected,
+          )}
+          type="button"
+          data-layer-id={node.layerId}
+          onClick={() => {
+            if (!selectedTiming) return;
+            onLayerSelect?.({
+              key: node.key,
+              pathId: selectedTiming.pathId,
+              layerId: node.layerId,
+              sequenceIndex: node.sequenceIndex,
+              startTime: selectedTiming.startTime,
+            });
+          }}
+          disabled={!selectedTiming || !onLayerSelect}
+          aria-label={`Preview scene ${node.sequenceIndex + 1} at ${formatTimestamp(selectedTiming?.startTime ?? 0)}`}
+        >
+          <span className={styles.branchNodeKicker}>
+            Scene {node.sequenceIndex + 1} · {formatTimestamp(selectedTiming?.startTime ?? 0)}
+          </span>
+          <strong className={styles.branchNodeTitle}>{node.title}</strong>
+          <span className={styles.branchNodeMeta}>
+            <span className={styles.branchNodeLeafCount}>{pathCountLabel(pathIds.length)}</span>
+            <span
+              className={classNames(
+                styles.branchNodeStatus,
+                styles[`status${layerStatus.tone[0].toUpperCase()}${layerStatus.tone.slice(1)}`],
+              )}
+            >
+              <span className={styles.branchStatusDot} aria-hidden="true" />
+              <span className={styles.branchNodeStatusLabel}>{layerStatus.label}</span>
+            </span>
+          </span>
+        </button>
+
+        {childNodes.length > 0 && (
+          <div className={styles.branchChildren} role="group">
+            {childNodes.map((child) => (
+              <div
+                className={classNames(
+                  styles.branchChild,
+                  normalizedActivePathId && child.pathTimings.some((timing) => timing.pathId === normalizedActivePathId) && styles.active,
+                )}
+                key={child.key}
+              >
+                <span
+                  className={classNames(
+                    styles.branchEdge,
+                    normalizedActivePathId && child.pathTimings.some((timing) => timing.pathId === normalizedActivePathId) && styles.active,
+                  )}
+                  aria-hidden="true"
+                />
+                {renderLayerNode(child, depth + 1)}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderNode = (
     nodeId: string,
     depth: number,
@@ -415,10 +608,52 @@ export function BranchTree({ branching, activePathId = null }: BranchTreeProps) 
       <div
         className={styles.branchTree}
         role="tree"
-        aria-label="Interactive story branches"
+        aria-label={hasLayerTree ? "Interactive story layers" : "Interactive story branches"}
         aria-orientation="horizontal"
       >
-        {renderNode(rootNodeId, 0)}
+        {hasLayerTree ? (
+          <div
+            className={classNames(styles.branchNode, styles.branchNodeRoot, styles.active)}
+            role="treeitem"
+            aria-level={1}
+            aria-expanded={true}
+            aria-selected={false}
+          >
+            <div className={classNames(styles.branchNodeCard, styles.active)}>
+              <span className={styles.branchNodeKicker}>Layer topology</span>
+              <strong className={styles.branchNodeTitle}>Opening sequence</strong>
+              <span className={styles.branchNodeMeta}>
+                <span className={styles.branchNodeLeafCount}>
+                  {pathCountLabel(branching.summary?.total_paths ?? branching.paths?.length ?? 0)}
+                </span>
+                <span className={classNames(styles.branchNodeStatus, styles.statusPending)}>
+                  <span className={styles.branchStatusDot} aria-hidden="true" />
+                  <span className={styles.branchNodeStatusLabel}>Live</span>
+                </span>
+              </span>
+            </div>
+            <div className={styles.branchChildren} role="group">
+              {[...layerTree.values()].map((node) => (
+                <div
+                  className={classNames(
+                    styles.branchChild,
+                    normalizedActivePathId && node.pathTimings.some((timing) => timing.pathId === normalizedActivePathId) && styles.active,
+                  )}
+                  key={node.key}
+                >
+                  <span
+                    className={classNames(
+                      styles.branchEdge,
+                      normalizedActivePathId && node.pathTimings.some((timing) => timing.pathId === normalizedActivePathId) && styles.active,
+                    )}
+                    aria-hidden="true"
+                  />
+                  {renderLayerNode(node, 1)}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : renderNode(rootNodeId, 0)}
       </div>
     </div>
   );

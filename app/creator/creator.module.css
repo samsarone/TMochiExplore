@@ -278,7 +278,12 @@
 /* Studio chrome */
 
 .studioShell {
+  height: 100dvh;
   min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  -webkit-overflow-scrolling: touch;
   background:
     radial-gradient(circle at 50% -18%, rgba(197, 255, 92, 0.055), transparent 30%),
     var(--studio-bg);
@@ -300,7 +305,7 @@
 }
 
 .headerIdentity,
-.headerIdentity > div:last-child,
+.headerIdentity > div,
 .creditCluster,
 .previewHeader > div,
 .fieldTitle,
@@ -312,8 +317,31 @@
 .headerIdentity { min-width: 0; gap: 18px; }
 .headerBrand { display: inline-flex; flex: 0 0 auto; font-size: 20px; line-height: 1; }
 .headerDivider { width: 1px; height: 28px; background: var(--studio-line); }
-.headerIdentity > div:last-child { min-width: 0; }
+.headerIdentity > div { min-width: 0; }
 .headerIdentity strong { font-size: 13px; font-weight: 540; letter-spacing: -0.02em; }
+
+.createNewButton {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--studio-line);
+  border-radius: 5px;
+  background: transparent;
+  color: #b9c0b5;
+  font-size: 9px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.createNewButton:hover:not(:disabled) {
+  border-color: rgba(197, 255, 92, 0.34);
+  color: var(--studio-acid);
+}
+
+.createNewButton:disabled { cursor: wait; opacity: 0.5; }
 
 .creditCluster { justify-content: flex-end; gap: 9px; }
 
@@ -924,6 +952,9 @@
   width: 100%;
   min-height: 190px;
   overflow: auto hidden;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
+  touch-action: pan-x pan-y;
   padding: 24px 18px 27px;
   scrollbar-width: thin;
   scrollbar-color: rgba(197, 255, 92, 0.25) transparent;
@@ -966,6 +997,26 @@
 }
 
 .branchNodeRoot > .branchNodeCard { border-color: rgba(197, 255, 92, 0.22); }
+
+.layerNodeCard {
+  appearance: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.layerNodeCard:hover:not(:disabled) {
+  border-color: rgba(197, 255, 92, 0.42);
+  transform: translateY(-1px);
+}
+
+.layerNodeCard:disabled { cursor: default; }
+
+.layerNodeSelected {
+  border-color: var(--studio-acid, #c5ff5c) !important;
+  background: linear-gradient(145deg, rgba(30, 39, 23, 0.99), rgba(13, 17, 11, 0.99));
+  box-shadow: 0 0 0 1px rgba(197, 255, 92, 0.1), 0 0 30px rgba(197, 255, 92, 0.13) !important;
+}
 
 .branchNodeKicker {
   margin-bottom: 6px;
@@ -1441,9 +1492,10 @@
   .loginBrand > span:last-child { display: none; }
   .loginFoot { flex-wrap: wrap; }
   .studioHeader { gap: 13px; padding: 11px 15px; }
-  .headerIdentity > div:last-child,
+  .headerIdentity > div,
   .headerDivider,
   .purchaseButton span { display: none; }
+  .createNewButton { min-width: 32px; padding: 0 8px; font-size: 0; }
   .creditCluster { gap: 6px; }
   .estimateCard,
   .balanceCard { min-width: 0; min-height: 40px; padding-inline: 8px; }

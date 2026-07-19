@@ -115,6 +115,7 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
   const switchTimeoutRef = useRef<number | null>(null);
   const boundaryWatchRef = useRef<BoundaryWatch | null>(null);
   const presentedChoiceKeyRef = useRef<string | null>(null);
+  const preloadedThumbnailUrlsRef = useRef(new Set<string>());
 
   const branching = status.branching ?? status.session?.branching;
   const paths = useMemo<NarrativeVideoBranchOutputPath[]>(() => {
@@ -171,6 +172,19 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
         )[0],
     [handledChoices, indexedChoices, resolvedActivePathId],
   );
+  const nextChoiceThumbnailUrls = useMemo(() => {
+    if (!nextChoice || !defaultPath) return [];
+
+    return [...new Set(nextChoice.point.options.map((option) => {
+      const target = targetForOption(
+        option,
+        paths,
+        resolvedActivePathId,
+        defaultPath.path_id,
+      );
+      return target?.thumbnail_url || status.thumbnail_url || "";
+    }).filter(Boolean))];
+  }, [defaultPath, nextChoice, paths, resolvedActivePathId, status.thumbnail_url]);
 
   const getActiveVideo = useCallback(
     () => videoRefs.current.get(resolvedActivePathId) ?? null,
@@ -475,6 +489,29 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     presentChoiceAtBoundary,
     resolvedActivePathId,
   ]);
+
+  useEffect(() => {
+    const switchAt = nextChoice?.point.switch_at_seconds;
+    if (
+      switchAt === undefined ||
+      !Number.isFinite(switchAt) ||
+      switchAt - currentTime > CHOICE_PROMPT_LEAD_SECONDS
+    ) {
+      return;
+    }
+
+    nextChoiceThumbnailUrls.forEach((url) => {
+      if (preloadedThumbnailUrlsRef.current.has(url)) return;
+      preloadedThumbnailUrlsRef.current.add(url);
+
+      const image = new Image();
+      image.decoding = "async";
+      image.src = url;
+      if (typeof image.decode === "function") {
+        void image.decode().catch(() => undefined);
+      }
+    });
+  }, [currentTime, nextChoice, nextChoiceThumbnailUrls]);
 
   const handleTimeUpdate = (video: HTMLVideoElement, pathId: string) => {
     if (pathId !== resolvedActivePathId) return;
