@@ -28,6 +28,11 @@ npm run build
 npm test
 ```
 
+`npm run build` uses the native Next.js compiler and produces `.next`, which is
+the default deployment target for Vercel. The optional Cloudflare Worker/vinext
+workflow remains available through `npm run dev:worker`,
+`npm run build:worker`, and `npm run start:worker`.
+
 The Samsar API defaults to `https://api.samsar.one/v1`. Override it for local
 development with `SAMSAR_API_BASE_URL`. Creator requests authenticate with the
 logged-in user's shared `authToken` Bearer credential; they do not require a
@@ -42,3 +47,10 @@ cookie used by the other Samsar apps. On `*.samsar.one`, that cookie is scoped t
 `.samsar.one`, so an existing Samsar, Gallery, or landing-site login is available
 to tMochi automatically. localStorage remains origin-scoped and acts only as a
 local fallback/cache.
+
+## Vercel deployment
+
+Import the repository with the **Next.js** Framework Preset. Vercel runs
+`npm run build` and detects the native `.next` output automatically. Do not set
+the Output Directory to `dist`; that directory belongs to the optional vinext
+Worker build.
