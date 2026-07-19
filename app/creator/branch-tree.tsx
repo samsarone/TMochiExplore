@@ -378,7 +378,7 @@ export function BranchTree({ branching, activePathId = null }: BranchTreeProps) 
               )}
             >
               <span className={styles.branchStatusDot} aria-hidden="true" />
-              {nodeStatus.label}
+              <span className={styles.branchNodeStatusLabel}>{nodeStatus.label}</span>
             </span>
           </span>
         </div>

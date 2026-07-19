@@ -294,7 +294,7 @@ export default function CreatorStudio({
   const complete = renderStarted && isCompleted(status);
   const failed = renderStarted && isFailed(status);
   const inProgress = renderStarted && !complete && !failed;
-  const progress = resolveProgress(status);
+  const progress = Math.min(100, Math.max(0, resolveProgress(status)));
   const stage = resolveStage(status, renderStarted);
   const creditsCharged = resolveCreditsCharged(status);
   const balanceMayBeShort = !renderStarted && user.generationCredits < estimatedCredits;
@@ -1039,6 +1039,10 @@ export default function CreatorStudio({
           sessionId={requestId}
           suggestedTitle={suggestedTitle(form.prompt)}
           onClose={() => setPublishOpen(false)}
+          onCreditsRemaining={(credits) => {
+            setUser((current) => ({ ...current, generationCredits: credits }));
+          }}
+          onInsufficientCredits={() => window.location.assign(billingUrl())}
         />
       )}
     </main>

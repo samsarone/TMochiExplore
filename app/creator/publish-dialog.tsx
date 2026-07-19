@@ -1,7 +1,7 @@
 "use client";
 
-import { ArrowRight, Check, LoaderCircle, Send, X } from "lucide-react";
-import { useState } from "react";
+import { ArrowRight, Check, LoaderCircle, Send, Sparkles, X } from "lucide-react";
+import { useRef, useState } from "react";
 import { broadcastAuthEvent, clearAuthData } from "../../lib/client-auth";
 import styles from "./creator.module.css";
 
@@ -11,23 +11,114 @@ type PublishResult = {
   session?: { published_publication_id?: string | null } | null;
 };
 
+type GenerateMetaResult = {
+  title?: string | null;
+  description?: string | null;
+  creditsRemaining?: number;
+  remainingCredits?: number;
+  code?: string;
+  error?: string;
+};
+
+const RETRYABLE_META_REQUEST_CODES = new Set([
+  "PUBLICATION_METADATA_IN_PROGRESS",
+  "PUBLICATION_METADATA_BILLING_IN_PROGRESS",
+  "PUBLICATION_METADATA_WORKER_LEASE_LOST",
+]);
+
+function createClientRequestId() {
+  return typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 export default function PublishDialog({
   sessionId,
   suggestedTitle,
   onClose,
+  onCreditsRemaining,
+  onInsufficientCredits,
 }: {
   sessionId: string;
   suggestedTitle: string;
   onClose: () => void;
+  onCreditsRemaining?: (credits: number) => void;
+  onInsufficientCredits: () => void;
 }) {
   const [title, setTitle] = useState(suggestedTitle.slice(0, 160));
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [generatingMeta, setGeneratingMeta] = useState(false);
   const [publicationId, setPublicationId] = useState<string | null>(null);
+  const metaRequestIdRef = useRef<string | null>(null);
+  const busy = submitting || generatingMeta;
+
+  function returnToSignIn() {
+    clearAuthData();
+    broadcastAuthEvent("logout");
+    window.location.reload();
+  }
+
+  async function generateMeta() {
+    const clientRequestId = metaRequestIdRef.current || createClientRequestId();
+    metaRequestIdRef.current = clientRequestId;
+    setGeneratingMeta(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/creator/generate-meta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, client_request_id: clientRequestId }),
+      });
+      const result = await response.json().catch(() => null) as GenerateMetaResult | null;
+      if (response.status === 401) {
+        returnToSignIn();
+        return;
+      }
+      const creditsRemaining = result?.creditsRemaining ?? result?.remainingCredits;
+      if (Number.isFinite(Number(creditsRemaining))) {
+        onCreditsRemaining?.(Math.max(0, Number(creditsRemaining)));
+      }
+      if (response.status === 402) {
+        metaRequestIdRef.current = null;
+        onInsufficientCredits();
+        return;
+      }
+      if (!response.ok) {
+        if (result?.code && !RETRYABLE_META_REQUEST_CODES.has(result.code)) {
+          metaRequestIdRef.current = null;
+        }
+        throw new Error(result?.error || "Unable to generate publication metadata.");
+      }
+
+      const generatedTitle = typeof result?.title === "string" ? result.title.trim() : "";
+      const generatedDescription = typeof result?.description === "string"
+        ? result.description.trim()
+        : "";
+      if (!generatedTitle || !generatedDescription) {
+        metaRequestIdRef.current = null;
+        throw new Error("Samsar did not return complete publication metadata.");
+      }
+
+      setTitle(generatedTitle.slice(0, 160));
+      setDescription(generatedDescription.slice(0, 2000));
+      metaRequestIdRef.current = null;
+    } catch (generateError) {
+      setError(
+        generateError instanceof Error
+          ? generateError.message
+          : "Unable to generate publication metadata.",
+      );
+    } finally {
+      setGeneratingMeta(false);
+    }
+  }
 
   async function publish(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (generatingMeta) return;
     if (!title.trim()) {
       setError("Add a title before publishing.");
       return;
@@ -42,9 +133,7 @@ export default function PublishDialog({
       });
       const result = await response.json().catch(() => null) as (PublishResult & { error?: string }) | null;
       if (response.status === 401) {
-        clearAuthData();
-        broadcastAuthEvent("logout");
-        window.location.reload();
+        returnToSignIn();
         return;
       }
       if (!response.ok) throw new Error(result?.error || "Unable to publish this film.");
@@ -64,10 +153,10 @@ export default function PublishDialog({
 
   return (
     <div className={styles.dialogBackdrop} role="presentation" onMouseDown={(event) => {
-      if (event.currentTarget === event.target && !submitting) onClose();
+      if (event.currentTarget === event.target && !busy) onClose();
     }}>
       <section className={styles.publishDialog} role="dialog" aria-modal="true" aria-labelledby="publish-title">
-        <button className={styles.dialogClose} type="button" onClick={onClose} disabled={submitting} aria-label="Close publish dialog">
+        <button className={styles.dialogClose} type="button" onClick={onClose} disabled={busy} aria-label="Close publish dialog">
           <X size={18} />
         </button>
 
@@ -83,9 +172,24 @@ export default function PublishDialog({
           </div>
         ) : (
           <form onSubmit={publish}>
-            <span className={styles.eyebrow}>Publish to tMochi</span>
-            <h2 id="publish-title">Name this transmission.</h2>
-            <p className={styles.dialogIntro}>Add the public details viewers will see in the feed.</p>
+            <div className={styles.dialogHeading}>
+              <div>
+                <span className={styles.eyebrow}>Publish to tMochi</span>
+                <h2 id="publish-title">Name this transmission.</h2>
+                <p className={styles.dialogIntro}>Add the public details viewers will see in the feed.</p>
+              </div>
+              <button
+                className={`${styles.secondaryButton} ${styles.generateMetaButton}`}
+                type="button"
+                onClick={() => void generateMeta()}
+                disabled={busy}
+              >
+                {generatingMeta
+                  ? <LoaderCircle className={styles.spin} size={15} />
+                  : <Sparkles size={15} />}
+                {generatingMeta ? "Generating" : "Generate meta"}
+              </button>
+            </div>
             {error && <div className={styles.formError} role="alert">{error}</div>}
             <label>
               <span>Title</span>
@@ -96,6 +200,7 @@ export default function PublishDialog({
                 placeholder="A memorable title"
                 autoFocus
                 required
+                disabled={busy}
               />
               <small>{title.length}/160</small>
             </label>
@@ -107,12 +212,13 @@ export default function PublishDialog({
                 maxLength={2000}
                 rows={5}
                 placeholder="Tell viewers what they are about to explore…"
+                disabled={busy}
               />
               <small>{description.length}/2,000</small>
             </label>
             <div className={styles.dialogActions}>
-              <button className={styles.secondaryButton} type="button" onClick={onClose} disabled={submitting}>Cancel</button>
-              <button className={styles.primaryButton} type="submit" disabled={submitting}>
+              <button className={styles.secondaryButton} type="button" onClick={onClose} disabled={busy}>Cancel</button>
+              <button className={styles.primaryButton} type="submit" disabled={busy}>
                 {submitting ? <LoaderCircle className={styles.spin} size={17} /> : <Send size={16} />}
                 {submitting ? "Publishing" : "Publish film"}
               </button>

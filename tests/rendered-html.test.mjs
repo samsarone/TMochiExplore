@@ -122,10 +122,13 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
     generateRoute,
     statusRoute,
     publishRoute,
+    generateMetaRoute,
     artifactRoute,
     branchPreview,
     branchTree,
     completedPlayer,
+    publishDialog,
+    creatorStyles,
     samsarClient,
     samsarAuth,
     clientAuth,
@@ -143,10 +146,13 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
     readFile(new URL("../app/api/creator/generate/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/creator/status/[requestId]/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/creator/publish/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/creator/generate-meta/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/creator/artifact/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/creator/branch-preview.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/creator/branch-tree.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/creator/completed-player.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/creator/publish-dialog.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/creator/creator.module.css", import.meta.url), "utf8"),
     readFile(new URL("../lib/samsar-client.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/samsar-auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/client-auth.ts", import.meta.url), "utf8"),
@@ -181,6 +187,12 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
   assert.match(statusRoute, /getV2StatusDetailed/);
   assert.match(publishRoute, /publishPublication/);
   assert.match(publishRoute, /profile\.username/);
+  assert.match(generateMetaRoute, /interactive_publication\/generate_meta/);
+  assert.match(generateMetaRoute, /clientRequestId\.length > 200/);
+  assert.match(generateMetaRoute, /sessionId\.length > 200/);
+  assert.match(generateMetaRoute, /idempotencyKey: clientRequestId/);
+  assert.match(generateMetaRoute, /creditsCharged/);
+  assert.match(generateMetaRoute, /creditsRemaining/);
   assert.match(artifactRoute, /verifyAuthenticatedSamsarProfile/);
   assert.match(artifactRoute, /redirect:\s*"manual"/);
   assert.doesNotMatch(artifactRoute, /endsWith\("\.cloudfront\.net"\)/);
@@ -195,6 +207,8 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
   assert.doesNotMatch(studio, /zipSync/);
   assert.match(studio, /Download artifacts/);
   assert.match(studio, /Purchase credits/);
+  assert.match(studio, /Math\.min\(100, Math\.max\(0, resolveProgress\(status\)\)\)/);
+  assert.match(studio, /onCreditsRemaining/);
   assert.doesNotMatch(studio, /Interactive cinema engine/);
   assert.doesNotMatch(studio, /Public feed/);
   assert.doesNotMatch(studio, /avatarUrl/);
@@ -206,6 +220,15 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
   assert.match(completedPlayer, /playerChoiceOverlay/);
   assert.match(completedPlayer, /requestVideoFrameCallback/);
   assert.match(completedPlayer, /preload=\{isActive \? "auto" : "none"\}/);
+  assert.match(publishDialog, /\/api\/creator\/generate-meta/);
+  assert.match(publishDialog, /client_request_id: clientRequestId/);
+  assert.match(publishDialog, /response\.status === 401/);
+  assert.match(publishDialog, /response\.status === 402/);
+  assert.match(publishDialog, /setTitle\(generatedTitle\.slice\(0, 160\)\)/);
+  assert.match(publishDialog, /setDescription\(generatedDescription\.slice\(0, 2000\)\)/);
+  assert.match(publishDialog, /onCreditsRemaining/);
+  assert.match(creatorStyles, /\.progressTrack\s*\{[^}]*overflow:\s*hidden/);
+  assert.match(creatorStyles, /\.progressTrack span\s*\{[^}]*max-width:\s*100%/);
   assert.match(samsarClient, /authToken/);
   assert.doesNotMatch(samsarClient, /apiKey[,\s:]/);
   assert.match(samsarAuth, /verifyWithConfiguredToken\(\)/);

@@ -766,8 +766,8 @@
 .progressReadout span { color: #6e766a; font: 7px var(--font-mono), monospace; letter-spacing: 0.1em; text-transform: uppercase; }
 .progressReadout strong { color: var(--studio-acid); font: 600 12px var(--font-mono), monospace; }
 
-.progressTrack { width: 100%; height: 2px; background: rgba(255, 255, 255, 0.05); }
-.progressTrack span { display: block; height: 100%; background: linear-gradient(90deg, var(--studio-acid), #85e870); box-shadow: 0 0 9px rgba(197, 255, 92, 0.42); transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.progressTrack { width: 100%; height: 2px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.05); }
+.progressTrack span { display: block; max-width: 100%; height: 100%; background: linear-gradient(90deg, var(--studio-acid), #85e870); box-shadow: 0 0 9px rgba(197, 255, 92, 0.42); transition: width 0.8s cubic-bezier(0.2, 0.8, 0.2, 1); }
 
 .previewBody { min-height: 0; flex: 1; display: flex; flex-direction: column; padding: clamp(24px, 3.3vw, 48px); }
 
@@ -959,36 +959,27 @@
   padding: 12px 13px;
   border: 1px solid rgba(231, 255, 214, 0.12);
   border-radius: 5px;
+  overflow: hidden;
   background: linear-gradient(145deg, rgba(22, 26, 21, 0.98), rgba(12, 14, 12, 0.98));
   box-shadow: 0 9px 25px rgba(0, 0, 0, 0.2);
   transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
 }
 
-.branchNodeCard::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: -4px;
-  width: 7px;
-  height: 7px;
-  border: 1px solid rgba(197, 255, 92, 0.28);
-  border-radius: 50%;
-  background: #0d100d;
-  transform: translateY(-50%);
-}
-
 .branchNodeRoot > .branchNodeCard { border-color: rgba(197, 255, 92, 0.22); }
-.branchNodeLeaf > .branchNodeCard::after { background: rgba(197, 255, 92, 0.12); }
 
 .branchNodeKicker {
   margin-bottom: 6px;
   color: #687064;
-  font: 600 6px var(--font-mono), monospace;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 6px;
+  font-weight: 600;
   letter-spacing: 0.15em;
   text-transform: uppercase;
 }
 
 .branchNodeTitle {
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   color: #e9eee6;
   font-size: 9px;
@@ -1000,6 +991,8 @@
 
 .branchNodeDescription {
   display: -webkit-box;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   margin: 5px 0 0;
   color: #777f73;
@@ -1013,7 +1006,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  gap: 6px;
   margin-top: 8px;
   padding-top: 7px;
   border-top: 1px solid rgba(255, 255, 255, 0.055);
@@ -1021,13 +1016,30 @@
 
 .branchNodeLeafCount,
 .branchNodeStatus {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   color: #61695e;
-  font: 6px var(--font-mono), monospace;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 6px;
   text-transform: uppercase;
   white-space: nowrap;
 }
 
-.branchNodeStatus { display: inline-flex; align-items: center; gap: 4px; }
+.branchNodeLeafCount {
+  flex: 1 1 auto;
+  text-overflow: ellipsis;
+}
+
+.branchNodeStatus {
+  flex: 0 1 auto;
+  display: inline-grid;
+  grid-template-columns: 4px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+}
+
+.branchNodeStatusLabel { overflow: hidden; text-overflow: ellipsis; }
 .branchStatusDot { width: 4px; height: 4px; border-radius: 50%; background: #777e73; }
 .statusReady { color: #aee455; }
 .statusReady .branchStatusDot { background: #c5ff5c; box-shadow: 0 0 6px rgba(197, 255, 92, 0.55); }
@@ -1045,42 +1057,49 @@
   justify-content: center;
   flex-direction: column;
   gap: 14px;
-  margin-left: 49px;
+  margin-left: 48px;
 }
 
-.branchChildren::before {
+.branchChildren::after {
   content: "";
   position: absolute;
-  top: calc(44px - 1px);
-  bottom: calc(44px - 1px);
-  left: -25px;
+  top: 50%;
+  left: -48px;
+  width: 24px;
+  height: 1px;
+  background: rgba(197, 255, 92, 0.12);
+  transform: translateY(-50%);
+}
+
+.branchChild {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.branchChild::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  bottom: -7px;
+  left: -24px;
   width: 1px;
   background: rgba(197, 255, 92, 0.12);
 }
 
-.branchChild { position: relative; display: flex; align-items: center; }
+.branchChild:first-child::before { top: 50%; }
+.branchChild:last-child::before { bottom: 50%; }
+.branchChild:only-child::before { display: none; }
 
 .branchEdge {
   position: absolute;
   top: 50%;
-  right: calc(100% + 0px);
-  width: 49px;
+  right: 100%;
+  width: 24px;
   height: 1px;
   background: rgba(197, 255, 92, 0.13);
   transform: translateY(-50%);
   transition: background 0.25s ease, box-shadow 0.25s ease;
-}
-
-.branchEdge::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: -1px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #394034;
-  transform: translateY(-50%);
 }
 
 .active.branchEdge,
@@ -1089,8 +1108,11 @@
   box-shadow: 0 0 8px rgba(197, 255, 92, 0.65);
 }
 
-.active.branchEdge::after,
-.branchEdge.active::after { background: var(--studio-acid, #c5ff5c); box-shadow: 0 0 9px rgba(197, 255, 92, 0.75); }
+.branchChildren:has(> .branchChild.active)::after,
+.branchChild.active::before {
+  background: var(--studio-acid, #c5ff5c);
+  box-shadow: 0 0 8px rgba(197, 255, 92, 0.5);
+}
 
 .active.branchNodeCard,
 .branchNodeCard.active {
@@ -1099,8 +1121,6 @@
   transform: translateY(-1px);
 }
 
-.active.branchNodeCard::after,
-.branchNodeCard.active::after { background: var(--studio-acid, #c5ff5c); box-shadow: 0 0 9px rgba(197, 255, 92, 0.7); }
 .active.branchNodeCard .branchNodeKicker,
 .branchNodeCard.active .branchNodeKicker { color: var(--studio-acid, #c5ff5c); }
 
@@ -1376,7 +1396,13 @@
 .publishDialog h2 { margin: 12px 0 7px; font-size: 35px; font-weight: 480; letter-spacing: -0.06em; }
 .dialogIntro { margin: 0 0 27px; color: var(--studio-muted); font-size: 11px; }
 .publishDialog form { display: grid; gap: 17px; }
+.dialogHeading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.dialogHeading > div { min-width: 0; }
+.dialogHeading .dialogIntro { margin-bottom: 0; }
+.generateMetaButton { min-height: 36px; flex: 0 0 auto; margin-top: 1px; padding-inline: 12px; white-space: nowrap; }
 .publishDialog label small { position: absolute; right: 0; top: 0; color: #646b60; font: 7px var(--font-mono), monospace; }
+.publishDialog input:disabled,
+.publishDialog textarea:disabled { cursor: wait; opacity: 0.58; }
 .dialogActions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 7px; }
 
 .publishSuccess { min-height: 350px; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; }
@@ -1443,6 +1469,8 @@
   .completedMedia > div { align-items: flex-start; flex-direction: column; gap: 7px; }
   .dialogBackdrop { padding: 13px; }
   .publishDialog { padding: 34px 23px 25px; }
+  .dialogHeading { flex-direction: column; gap: 14px; }
+  .generateMetaButton { width: 100%; }
   .dialogActions { flex-direction: column-reverse; }
   .dialogActions > button { width: 100%; }
 }
