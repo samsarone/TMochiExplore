@@ -1,62 +1,109 @@
-# tMochi
+# tMochi 🎬
 
-A fast, futuristic viewer for Samsar interactive films. tMochi reads the public
-`InteractivePublication` catalog, renders publication thumbnails, and plays the
-compact `interactive_video_manifest.v1` graph as a seamless branched timeline.
+[![Tests](https://github.com/samsarone/tMochi/actions/workflows/ci.yml/badge.svg)](https://github.com/samsarone/tMochi/actions/workflows/ci.yml)
 
-## Features
+**The world’s first and only interactive cinema creator.**
 
-- Public catalog feed with cursor pagination and search
-- Responsive featured and grid views
-- Media-timed choice overlays with path thumbnails and branch hints
-- Frame-adjacent path switching that preserves volume, mute state, and speed
-- Multi-level choice-point support
-- A Samsar-authenticated Creator Studio at `/creator`
-- Resumable creator sessions at `/creator/[sessionId]`
-- One-to-three-level interactive generation with live credit estimates
-- Detailed branch previews, downloadable ZIP artifacts, and feed publishing
-- A prototype reel when the live catalog has no published films
+tMochi turns a single idea into a living film with choices, alternate scenes,
+and endings shaped by the audience. Describe the story you want to tell, direct
+how far it can branch, and watch an entire cinematic story tree come alive.
 
-## Development
+This is not a video with buttons added afterward. Every path is part of one
+connected movie, built to let viewers step inside the story and decide what
+happens next.
 
-Requires Node.js `>=22.13.0`.
+## Don’t just watch. Decide.
+
+A tMochi film moves like modern streaming cinema—until the story reaches a
+moment that belongs to the viewer.
+
+- A subtle **Choose the next path** cue appears before each decision.
+- Cinematic branch thumbnails fade naturally into the scene.
+- Every choice continues from the same moment without losing sound or playback
+  settings.
+- Multi-level stories remember the path already taken.
+- Shared film links open directly in the interactive player.
+- The public cinema feed makes published stories easy to discover and replay.
+
+## One premise. Every possible path.
+
+The Creator Studio is designed for storytellers, not editing timelines.
+
+1. **Describe your movie** — start with a premise, character, conflict, or
+   impossible choice.
+2. **Choose the depth** — create a focused fork or a story tree with up to three
+   levels of decisions.
+3. **Watch the world form** — follow live generation progress and see the branch
+   map fill with scenes.
+4. **Preview every route** — explore random paths or direct the story choice by
+   choice.
+5. **Name the transmission** — write the public details yourself or let tMochi
+   generate a title and description.
+6. **Publish the experience** — release it to the tMochi cinema feed or download
+   the complete artifact package.
+
+## Made for interactive storytellers
+
+- **Prompt-to-interactive-film creation** powered by Samsar
+- **One-to-three-level story trees** with distinct branches and endings
+- **Live branch topology** that shows the structure as it is created
+- **Resumable sessions** so a film remains available at its own Creator URL
+- **Interactive previews** with media-accurate decision points
+- **Smart publishing metadata** generated from the completed movie
+- **Transparent credit estimates and balances** throughout creation
+- **Downloadable production artifacts** for every rendered path
+- **A cinematic public library** with search, featured stories, and shareable
+  watch links
+
+## A cinema with more than one ending
+
+tMochi is built around a simple belief: audiences can be more than spectators.
+They can protect a character, follow the signal, open the forbidden door, or
+walk away—and the film should be ready for every decision.
+
+The result is a new format between cinema and storytelling: authored enough to
+feel intentional, alive enough to surprise even its creator.
+
+## Powered by Samsar
+
+tMochi uses Samsar to create, render, resume, and publish branching films.
+Existing Samsar accounts work in the Creator Studio, and completed interactive
+publications flow into the same public catalog used by the viewer.
+
+## For contributors
+
+The project requires Node.js `>=22.13.0`.
 
 ```bash
 npm install
 npm run dev
-npm run build
+```
+
+Run the same checks shown by the badge:
+
+```bash
+npm run lint
 npm test
 ```
 
-`npm run build` uses the native Next.js compiler and produces `.next`, which is
-the default deployment target for Vercel. The optional Cloudflare Worker/vinext
-workflow remains available through `npm run dev:worker`,
-`npm run build:worker`, and `npm run start:worker`.
+`npm test` builds the Cloudflare Worker version and runs the existing Node.js
+integration suite against the rendered cinema, shared player routes, Creator
+authentication, branching contracts, generation flow, and publishing tools.
 
-The Samsar API defaults to `https://api.samsar.one/v1`. Override it for local
-development with `SAMSAR_API_BASE_URL`. Creator requests authenticate with the
-logged-in user's shared `authToken` Bearer credential; they do not require a
-Samsar API key. Add any additional exact artifact CDN hostnames as a
-comma-separated `SAMSAR_ARTIFACT_HOSTS` value.
+<details>
+<summary>Configuration and deployment notes</summary>
 
-The landing-page Create action reserves a dedicated branched interactive-video
-draft through `/v2/text_to_interactive_video/session` and navigates directly to
-`/creator/:sessionId?draft=1`. Generation submits the selected settings into
-that same session, then removes the draft marker and begins detailed-status
-polling at the canonical session URL.
+The Samsar API defaults to `https://api.samsar.one/v1`. Set
+`SAMSAR_API_BASE_URL` to use another API origin. Creator requests use the
+signed-in user’s shared Samsar bearer session. Additional artifact hosts can be
+provided with the comma-separated `SAMSAR_ARTIFACT_HOSTS` value.
 
-Creator login and registration call the Samsar `/users/login` and
-`/users/register` endpoints directly through same-origin Next.js routes; the SDK
-is not used to collect credentials. A successful response caches `authToken` in
-the tMochi origin's localStorage and writes the same 30-day, JavaScript-readable
-cookie used by the other Samsar apps. On `*.samsar.one`, that cookie is scoped to
-`.samsar.one`, so an existing Samsar, Gallery, or landing-site login is available
-to tMochi automatically. localStorage remains origin-scoped and acts only as a
-local fallback/cache.
+For Vercel, use the Next.js framework preset and the standard `npm run build`
+output. The optional Cloudflare Worker workflow is available through
+`npm run dev:worker`, `npm run build:worker`, and `npm run start:worker`.
 
-## Vercel deployment
+</details>
 
-Import the repository with the **Next.js** Framework Preset. Vercel runs
-`npm run build` and detects the native `.next` output automatically. Do not set
-the Output Directory to `dist`; that directory belongs to the optional vinext
-Worker build.
+---
+
+**Make a movie. Build every choice. Let the audience decide.**
