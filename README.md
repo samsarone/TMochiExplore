@@ -4,6 +4,8 @@
 
 **The world’s first and only interactive cinema creator.**
 
+Initial implementation in response to Fal x Sequoia hackathon.
+
 tMochi turns a single idea into a living film with choices, alternate scenes,
 and endings shaped by the audience. Describe the story you want to tell, direct
 how far it can branch, and watch an entire cinematic story tree come alive.

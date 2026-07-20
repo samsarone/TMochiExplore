@@ -43,17 +43,22 @@ type PendingResume = {
   pathId: string;
   time: number;
   play: boolean;
+  volume: number;
 };
 
 type BoundaryWatch = {
   video: HTMLVideoElement;
   frameCallbackId?: number;
+  audioFadeTimeoutId?: number;
+  audioFadeIntervalId?: number;
   previewTimeoutId?: number;
   timeoutId?: number;
 };
 
 const MEDIA_WAIT_TIMEOUT_MS = 12_000;
 const CHOICE_FADE_LEAD_SECONDS = 0.02;
+const CHOICE_AUDIO_FADE_LEAD_SECONDS = 1.25;
+const CHOICE_AUDIO_FADE_INTERVAL_MS = 50;
 const CHOICE_PROMPT_LEAD_SECONDS = 5;
 
 const formatTime = (seconds: number) => {
@@ -114,6 +119,10 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
   const pendingResumeRef = useRef<PendingResume | null>(null);
   const switchTimeoutRef = useRef<number | null>(null);
   const boundaryWatchRef = useRef<BoundaryWatch | null>(null);
+  const choiceAudioFadeRef = useRef<{
+    video: HTMLVideoElement;
+    baseVolume: number;
+  } | null>(null);
   const presentedChoiceKeyRef = useRef<string | null>(null);
   const preloadedThumbnailUrlsRef = useRef(new Set<string>());
 
@@ -201,6 +210,8 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
   const clearBoundaryWatch = useCallback(() => {
     const watch = boundaryWatchRef.current;
     if (!watch) return;
+    if (watch.audioFadeTimeoutId !== undefined) window.clearTimeout(watch.audioFadeTimeoutId);
+    if (watch.audioFadeIntervalId !== undefined) window.clearInterval(watch.audioFadeIntervalId);
     if (watch.previewTimeoutId !== undefined) window.clearTimeout(watch.previewTimeoutId);
     if (watch.timeoutId !== undefined) window.clearTimeout(watch.timeoutId);
     if (
@@ -211,6 +222,43 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     }
     boundaryWatchRef.current = null;
   }, []);
+
+  const restoreChoiceAudioVolume = useCallback((video?: HTMLVideoElement | null) => {
+    const fade = choiceAudioFadeRef.current;
+    if (!fade || (video && fade.video !== video)) return video?.volume ?? 1;
+    fade.video.volume = fade.baseVolume;
+    choiceAudioFadeRef.current = null;
+    return fade.baseVolume;
+  }, []);
+
+  const updateChoiceAudioFade = useCallback((
+    video: HTMLVideoElement,
+    switchAt: number,
+    mediaTime: number,
+  ) => {
+    const secondsRemaining = switchAt - mediaTime;
+    if (secondsRemaining > CHOICE_AUDIO_FADE_LEAD_SECONDS) {
+      restoreChoiceAudioVolume(video);
+      return;
+    }
+
+    let fade = choiceAudioFadeRef.current;
+    if (fade?.video !== video) {
+      restoreChoiceAudioVolume();
+      fade = { video, baseVolume: video.volume };
+      choiceAudioFadeRef.current = fade;
+    }
+
+    const fadeDuration = Math.min(
+      CHOICE_AUDIO_FADE_LEAD_SECONDS,
+      Math.max(0.01, switchAt),
+    );
+    const fadeProgress = Math.max(
+      0,
+      Math.min(1, secondsRemaining / fadeDuration),
+    );
+    video.volume = fade.baseVolume * fadeProgress;
+  }, [restoreChoiceAudioVolume]);
 
   const showMediaError = useCallback(
     (message: string, video?: HTMLVideoElement | null) => {
@@ -277,8 +325,9 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     () => () => {
       clearBoundaryWatch();
       clearSwitchTimeout();
+      restoreChoiceAudioVolume();
     },
-    [clearBoundaryWatch, clearSwitchTimeout],
+    [clearBoundaryWatch, clearSwitchTimeout, restoreChoiceAudioVolume],
   );
 
   useEffect(() => {
@@ -309,17 +358,24 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     target: NarrativeVideoBranchOutputPath,
     mediaTime: number,
     shouldPlay: boolean,
+    volume = 1,
   ) => {
     const video = videoRefs.current.get(target.path_id);
     setMediaError(null);
     setCurrentTime(mediaTime);
     setDuration(pathDuration(target, video, status.session?.duration));
     if (!video || video.readyState < HTMLMediaElement.HAVE_METADATA) {
-      pendingResumeRef.current = { pathId: target.path_id, time: mediaTime, play: shouldPlay };
+      pendingResumeRef.current = {
+        pathId: target.path_id,
+        time: mediaTime,
+        play: shouldPlay,
+        volume,
+      };
       if (shouldPlay) beginMediaWait(target.path_id, video);
       video?.load();
       return;
     }
+    video.volume = volume;
     video.currentTime = clampMediaTime(mediaTime, target, video);
     if (shouldPlay) void playVideo(video);
     else setSwitching(false);
@@ -333,6 +389,7 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
 
     const switchAt = pendingChoice.point.switch_at_seconds;
     const mediaTime = Number.isFinite(switchAt) ? Math.max(0, switchAt ?? 0) : sourceVideo?.currentTime ?? currentTime;
+    const resumeVolume = restoreChoiceAudioVolume(sourceVideo);
     sourceVideo?.pause();
     clearBoundaryWatch();
     presentedChoiceKeyRef.current = null;
@@ -343,11 +400,12 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     setPreviewChoice(null);
     setSwitching(target.path_id !== resolvedActivePathId);
     setActivePathId(target.path_id);
-    syncAndPlay(target, mediaTime, true);
+    syncAndPlay(target, mediaTime, true, resumeVolume);
   };
 
   const replay = () => {
     if (!defaultPath) return;
+    const replayVolume = restoreChoiceAudioVolume(getActiveVideo());
     videoRefs.current.forEach((video) => video.pause());
     clearBoundaryWatch();
     clearSwitchTimeout();
@@ -360,7 +418,7 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     setSwitching(defaultPath.path_id !== resolvedActivePathId);
     setActivePathId(defaultPath.path_id);
     setHasStarted(true);
-    syncAndPlay(defaultPath, 0, true);
+    syncAndPlay(defaultPath, 0, true, replayVolume);
   };
 
   const seek = (mediaTime: number) => {
@@ -391,6 +449,7 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     }
     const pendingResume = pendingResumeRef.current;
     if (pendingResume?.pathId !== path.path_id) return;
+    video.volume = pendingResume.volume;
     video.currentTime = clampMediaTime(pendingResume.time, path, video);
     pendingResumeRef.current = null;
     if (pendingResume.play) void playVideo(video);
@@ -411,6 +470,7 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
       presentedChoiceKeyRef.current = choice.key;
       clearBoundaryWatch();
       clearSwitchTimeout();
+      updateChoiceAudioFade(video, switchAt, switchAt);
       video.pause();
       video.currentTime = clampMediaTime(switchAt, activePath, video);
       setCurrentTime(switchAt);
@@ -418,7 +478,7 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
       setPendingChoice(choice);
       setSwitching(false);
     },
-    [activePath, clearBoundaryWatch, clearSwitchTimeout],
+    [activePath, clearBoundaryWatch, clearSwitchTimeout, updateChoiceAudioFade],
   );
 
   useEffect(() => {
@@ -431,7 +491,26 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
 
     const watch: BoundaryWatch = { video };
     boundaryWatchRef.current = watch;
+    const audioFadeAt = Math.max(0, switchAt - CHOICE_AUDIO_FADE_LEAD_SECONDS);
     const previewAt = Math.max(0, switchAt - CHOICE_FADE_LEAD_SECONDS);
+    const fadeAudio = () => {
+      if (
+        boundaryWatchRef.current !== watch ||
+        video.paused ||
+        activePathIdRef.current !== resolvedActivePathId
+      ) {
+        return;
+      }
+      updateChoiceAudioFade(video, switchAt, video.currentTime);
+    };
+    const startAudioFade = () => {
+      fadeAudio();
+      if (boundaryWatchRef.current !== watch) return;
+      watch.audioFadeIntervalId = window.setInterval(
+        fadeAudio,
+        CHOICE_AUDIO_FADE_INTERVAL_MS,
+      );
+    };
     const showPreview = () => {
       if (
         boundaryWatchRef.current !== watch ||
@@ -454,7 +533,12 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     };
 
     const remainingSeconds = Math.max(0, switchAt - video.currentTime);
+    const audioFadeRemainingSeconds = Math.max(0, audioFadeAt - video.currentTime);
     const previewRemainingSeconds = Math.max(0, previewAt - video.currentTime);
+    watch.audioFadeTimeoutId = window.setTimeout(
+      startAudioFade,
+      (audioFadeRemainingSeconds / Math.max(0.1, video.playbackRate)) * 1_000,
+    );
     watch.previewTimeoutId = window.setTimeout(
       showPreview,
       (previewRemainingSeconds / Math.max(0.1, video.playbackRate)) * 1_000,
@@ -468,6 +552,7 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
       const inspectFrame: VideoFrameRequestCallback = (_now, metadata) => {
         if (boundaryWatchRef.current !== watch) return;
         const mediaTime = Math.max(metadata.mediaTime, video.currentTime);
+        if (mediaTime >= audioFadeAt) updateChoiceAudioFade(video, switchAt, mediaTime);
         if (mediaTime >= switchAt) {
           stopAtBoundary();
           return;
@@ -488,6 +573,7 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     playing,
     presentChoiceAtBoundary,
     resolvedActivePathId,
+    updateChoiceAudioFade,
   ]);
 
   useEffect(() => {
@@ -520,6 +606,7 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
     if (!nextChoice || pendingChoice) return;
     const switchAt = nextChoice.point.switch_at_seconds;
     if (switchAt === undefined || !Number.isFinite(switchAt)) return;
+    updateChoiceAudioFade(video, switchAt, mediaTime);
     if (mediaTime >= switchAt - CHOICE_FADE_LEAD_SECONDS) setPreviewChoice(nextChoice);
     if (mediaTime < switchAt) return;
     presentChoiceAtBoundary(video, pathId, nextChoice);
@@ -528,12 +615,14 @@ export function CompletedPlayer({ status, onClose, onPathChange }: CompletedPlay
   const retryActivePath = () => {
     if (!activePath) return;
     const video = getActiveVideo();
+    const retryVolume = restoreChoiceAudioVolume(video);
     setMediaError(null);
     setSwitching(true);
     pendingResumeRef.current = {
       pathId: activePath.path_id,
       time: currentTime,
       play: true,
+      volume: retryVolume,
     };
     beginMediaWait(activePath.path_id, video);
     video?.load();

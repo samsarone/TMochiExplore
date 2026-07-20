@@ -48,13 +48,35 @@ type InteractivePlayerHandle = {
 
 type ChoiceTransitionWatch = {
   video: HTMLVideoElement;
+  audioFadeTimeoutId?: number;
+  audioFadeIntervalId?: number;
   previewTimeoutId?: number;
   boundaryTimeoutId?: number;
   frameCallbackId?: number;
 };
 
 const CHOICE_FADE_LEAD_SECONDS = 0.02;
+const CHOICE_AUDIO_FADE_LEAD_SECONDS = 1.25;
+const CHOICE_AUDIO_FADE_INTERVAL_MS = 50;
 const CHOICE_PROMPT_LEAD_SECONDS = 5;
+const MOBILE_PLAYER_MEDIA_QUERY =
+  "(max-width: 767px), (max-width: 1024px) and (pointer: coarse)";
+
+const useMobilePlayerLoading = () => {
+  // Start conservatively so mobile browsers cannot begin fetching branch videos
+  // from the server-rendered markup before React has detected the viewport.
+  const [isMobile, setIsMobile] = useState(true);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(MOBILE_PLAYER_MEDIA_QUERY);
+    const update = () => setIsMobile(mediaQuery.matches);
+    update();
+    mediaQuery.addEventListener("change", update);
+    return () => mediaQuery.removeEventListener("change", update);
+  }, []);
+
+  return isMobile;
+};
 
 const publicationPath = (publicationId: string) =>
   `/watch/${encodeURIComponent(publicationId)}`;
@@ -190,7 +212,13 @@ function PublicationCard({
         onClick={(event) => onPlay(publication, event)}
         aria-label={`Play ${publication.title}`}
       >
-        <img src={publication.mainThumbnailUrl || publication.thumbnailUrl} alt="" />
+        <img
+          src={publication.mainThumbnailUrl || publication.thumbnailUrl}
+          alt=""
+          loading={featured ? "eager" : "lazy"}
+          decoding="async"
+          fetchPriority={featured ? "high" : "low"}
+        />
         <span className="poster-shade" />
         <span className="play-orbit">
           <Play size={featured ? 25 : 20} fill="currentColor" />
@@ -218,6 +246,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   onClose: () => void;
   startPaused: boolean;
 }>(function InteractivePlayer({ publication, onClose, startPaused }, ref) {
+  const isMobileLoading = useMobilePlayerLoading();
   const paths = publication.manifest.outputs.paths;
   const defaultPath =
     paths.find((path) => path.path_id === publication.manifest.default_path_id) ??
@@ -246,6 +275,10 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   } | null>(null);
   const controlsTimerRef = useRef<number | null>(null);
   const choiceTransitionWatchRef = useRef<ChoiceTransitionWatch | null>(null);
+  const choiceAudioFadeRef = useRef<{
+    video: HTMLVideoElement;
+    baseVolume: number;
+  } | null>(null);
   const presentedChoiceIdRef = useRef<string | null>(null);
   const preloadedThumbnailUrlsRef = useRef(new Set<string>());
   const activePath = paths.find((path) => path.path_id === activePathId) ?? defaultPath;
@@ -261,7 +294,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   }, [activePathId, handledChoices, publication.manifest.tree.choice_points]);
 
   const bufferedPaths = useMemo(() => {
-    if (!nextChoice) return [];
+    if (isMobileLoading || !nextChoice) return [];
     const candidates = nextChoice.options
       .map((option) => pathForOption(
         option,
@@ -276,7 +309,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
         candidates.findIndex((candidate) => candidate.path_id === path.path_id) === index,
       )
       .slice(0, 2);
-  }, [activePathId, nextChoice, paths, publication.manifest.default_path_id]);
+  }, [activePathId, isMobileLoading, nextChoice, paths, publication.manifest.default_path_id]);
 
   const mountedPaths = useMemo(() => {
     if (!activePath) return bufferedPaths;
@@ -305,6 +338,8 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   const clearChoiceTransitionWatch = useCallback(() => {
     const watch = choiceTransitionWatchRef.current;
     if (!watch) return;
+    if (watch.audioFadeTimeoutId !== undefined) window.clearTimeout(watch.audioFadeTimeoutId);
+    if (watch.audioFadeIntervalId !== undefined) window.clearInterval(watch.audioFadeIntervalId);
     if (watch.previewTimeoutId !== undefined) window.clearTimeout(watch.previewTimeoutId);
     if (watch.boundaryTimeoutId !== undefined) window.clearTimeout(watch.boundaryTimeoutId);
     if (
@@ -315,6 +350,43 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     }
     choiceTransitionWatchRef.current = null;
   }, []);
+
+  const restoreChoiceAudioVolume = useCallback((video?: HTMLVideoElement | null) => {
+    const fade = choiceAudioFadeRef.current;
+    if (!fade || (video && fade.video !== video)) return video?.volume ?? 1;
+    fade.video.volume = fade.baseVolume;
+    choiceAudioFadeRef.current = null;
+    return fade.baseVolume;
+  }, []);
+
+  const updateChoiceAudioFade = useCallback((
+    video: HTMLVideoElement,
+    switchAt: number,
+    mediaTime: number,
+  ) => {
+    const secondsRemaining = switchAt - mediaTime;
+    if (secondsRemaining > CHOICE_AUDIO_FADE_LEAD_SECONDS) {
+      restoreChoiceAudioVolume(video);
+      return;
+    }
+
+    let fade = choiceAudioFadeRef.current;
+    if (fade?.video !== video) {
+      restoreChoiceAudioVolume();
+      fade = { video, baseVolume: video.volume };
+      choiceAudioFadeRef.current = fade;
+    }
+
+    const fadeDuration = Math.min(
+      CHOICE_AUDIO_FADE_LEAD_SECONDS,
+      Math.max(0.01, switchAt),
+    );
+    const fadeProgress = Math.max(
+      0,
+      Math.min(1, secondsRemaining / fadeDuration),
+    );
+    video.volume = fade.baseVolume * fadeProgress;
+  }, [restoreChoiceAudioVolume]);
 
   const presentChoiceAtBoundary = useCallback((
     video: HTMLVideoElement,
@@ -330,12 +402,13 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
 
     presentedChoiceIdRef.current = choice.branch_point_id;
     clearChoiceTransitionWatch();
+    updateChoiceAudioFade(video, choice.switch_at_seconds, choice.switch_at_seconds);
     video.currentTime = choice.switch_at_seconds;
     video.pause();
     setCurrentTime(choice.switch_at_seconds);
     setPreviewChoice(choice);
     setPendingChoice(choice);
-  }, [activePathId, clearChoiceTransitionWatch]);
+  }, [activePathId, clearChoiceTransitionWatch, updateChoiceAudioFade]);
 
   const playWithSound = useCallback(async () => {
     const video = getActiveVideo();
@@ -413,7 +486,26 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     const watch: ChoiceTransitionWatch = { video };
     choiceTransitionWatchRef.current = watch;
     const switchAt = nextChoice.switch_at_seconds;
+    const audioFadeAt = Math.max(0, switchAt - CHOICE_AUDIO_FADE_LEAD_SECONDS);
     const previewAt = Math.max(0, switchAt - CHOICE_FADE_LEAD_SECONDS);
+    const fadeAudio = () => {
+      if (
+        choiceTransitionWatchRef.current !== watch ||
+        video.paused ||
+        activePathId !== video.dataset.pathId
+      ) {
+        return;
+      }
+      updateChoiceAudioFade(video, switchAt, video.currentTime);
+    };
+    const startAudioFade = () => {
+      fadeAudio();
+      if (choiceTransitionWatchRef.current !== watch) return;
+      watch.audioFadeIntervalId = window.setInterval(
+        fadeAudio,
+        CHOICE_AUDIO_FADE_INTERVAL_MS,
+      );
+    };
     const showPreview = () => {
       if (
         choiceTransitionWatchRef.current !== watch ||
@@ -435,9 +527,11 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
       presentChoiceAtBoundary(video, activePathId, nextChoice);
     };
     const playbackRate = Math.max(0.1, video.playbackRate);
+    const audioFadeDelay = Math.max(0, ((audioFadeAt - video.currentTime) / playbackRate) * 1_000);
     const previewDelay = Math.max(0, ((previewAt - video.currentTime) / playbackRate) * 1_000);
     const boundaryDelay = Math.max(0, ((switchAt - video.currentTime) / playbackRate) * 1_000);
 
+    watch.audioFadeTimeoutId = window.setTimeout(startAudioFade, audioFadeDelay);
     watch.previewTimeoutId = window.setTimeout(showPreview, previewDelay);
     watch.boundaryTimeoutId = window.setTimeout(stopAtBoundary, boundaryDelay);
 
@@ -445,6 +539,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
       const inspectFrame: VideoFrameRequestCallback = (_now, metadata) => {
         if (choiceTransitionWatchRef.current !== watch) return;
         const mediaTime = Math.max(metadata.mediaTime, video.currentTime);
+        if (mediaTime >= audioFadeAt) updateChoiceAudioFade(video, switchAt, mediaTime);
         if (mediaTime >= switchAt) {
           stopAtBoundary();
           return;
@@ -466,13 +561,18 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     playing,
     presentChoiceAtBoundary,
     switching,
+    updateChoiceAudioFade,
   ]);
 
-  useEffect(() => clearChoiceTransitionWatch, [clearChoiceTransitionWatch]);
+  useEffect(() => () => {
+    clearChoiceTransitionWatch();
+    restoreChoiceAudioVolume();
+  }, [clearChoiceTransitionWatch, restoreChoiceAudioVolume]);
 
   useEffect(() => {
     if (
       !nextChoice ||
+      (isMobileLoading && !playing) ||
       nextChoice.switch_at_seconds - currentTime > CHOICE_PROMPT_LEAD_SECONDS
     ) {
       return;
@@ -489,7 +589,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
         void image.decode().catch(() => undefined);
       }
     });
-  }, [currentTime, nextChoice, nextChoiceThumbnailUrls]);
+  }, [currentTime, isMobileLoading, nextChoice, nextChoiceThumbnailUrls, playing]);
 
   useEffect(() => {
     if (!nextChoice) return;
@@ -545,6 +645,9 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   const handleTimeUpdate = (video: HTMLVideoElement, pathId: string) => {
     if (pathId !== activePathId) return;
     setCurrentTime(video.currentTime);
+    if (nextChoice) {
+      updateChoiceAudioFade(video, nextChoice.switch_at_seconds, video.currentTime);
+    }
     if (nextChoice && video.currentTime >= nextChoice.switch_at_seconds) {
       presentChoiceAtBoundary(video, pathId, nextChoice);
     }
@@ -562,6 +665,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     if (!target || !video) return;
 
     const resumeAt = pendingChoice.switch_at_seconds + 0.04;
+    const resumeVolume = restoreChoiceAudioVolume(video);
     clearChoiceTransitionWatch();
     presentedChoiceIdRef.current = null;
     setHandledChoices((previous) => [...previous, pendingChoice.branch_point_id]);
@@ -577,7 +681,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     resumeRef.current = {
       pathId: target.path_id,
       time: resumeAt,
-      volume: video.volume,
+      volume: resumeVolume,
       muted: video.muted,
       rate: video.playbackRate,
     };
@@ -586,7 +690,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
 
     const bufferedVideo = videoElementsRef.current.get(target.path_id);
     if (bufferedVideo && bufferedVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
-      bufferedVideo.volume = video.volume;
+      bufferedVideo.volume = resumeVolume;
       bufferedVideo.muted = video.muted;
       bufferedVideo.playbackRate = video.playbackRate;
       bufferedVideo.currentTime = Math.min(
@@ -631,6 +735,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
 
   const restart = () => {
     const video = getActiveVideo();
+    const restartVolume = restoreChoiceAudioVolume(video);
     clearChoiceTransitionWatch();
     presentedChoiceIdRef.current = null;
     setHandledChoices([]);
@@ -641,7 +746,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
       resumeRef.current = {
         pathId: defaultPath.path_id,
         time: 0,
-        volume: video?.volume ?? 1,
+        volume: restartVolume,
         muted,
         rate: playbackRate,
       };
@@ -651,7 +756,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
       const bufferedDefault = videoElementsRef.current.get(defaultPath.path_id);
       if (bufferedDefault && bufferedDefault.readyState >= HTMLMediaElement.HAVE_METADATA) {
         bufferedDefault.currentTime = 0;
-        bufferedDefault.volume = video?.volume ?? 1;
+        bufferedDefault.volume = restartVolume;
         bufferedDefault.muted = muted;
         bufferedDefault.playbackRate = playbackRate;
         resumeRef.current = null;
@@ -677,6 +782,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     const video = getActiveVideo();
     if (!video || pendingChoice) return;
     video.currentTime = value;
+    if (nextChoice) updateChoiceAudioFade(video, nextChoice.switch_at_seconds, value);
     setCurrentTime(value);
   };
 
@@ -758,7 +864,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
               data-path-id={path.path_id}
               src={contentUrl}
               poster={isActive ? publication.mainThumbnailUrl : undefined}
-              preload="auto"
+              preload={isActive || !isMobileLoading ? "auto" : "none"}
               playsInline
               tabIndex={isActive ? 0 : -1}
               aria-hidden={!isActive}
