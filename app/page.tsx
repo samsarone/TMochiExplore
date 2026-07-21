@@ -1438,7 +1438,7 @@ export default function Home({
                 </div>
               )}
               <div className="hero-overlay">
-                <h1>Learn technical topics. <em>Deeply.</em></h1>
+                <h1>Learn Topics. <em>Deeply</em></h1>
                 <p className="hero-summary">
                   <span className="hero-summary-line"><span>Every alternative outcome, explained.</span></span>
                   <span className="hero-summary-line"><span>Every path, followed.</span></span>

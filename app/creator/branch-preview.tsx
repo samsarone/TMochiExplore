@@ -9,7 +9,16 @@ import type {
   VideoSessionPreviewAudioLayer,
   VideoSessionPreviewLayer,
 } from "samsar-js";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 
 import styles from "./creator.module.css";
 
@@ -68,6 +77,7 @@ type PlayablePath = {
 };
 
 const DEFAULT_SCENE_DURATION = 4;
+const DEFAULT_PREVIEW_ASPECT_RATIO = 16 / 9;
 
 function finiteNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -86,6 +96,35 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function parseAspectRatio(value: unknown): number | undefined {
+  const ratio = nonEmptyString(value)?.toLowerCase();
+  if (!ratio) return undefined;
+  if (ratio === "landscape") return 16 / 9;
+  if (ratio === "portrait") return 9 / 16;
+  if (ratio === "square") return 1;
+
+  const dimensions = ratio.split(/[:/x]/).map((part) => Number(part.trim()));
+  if (
+    dimensions.length !== 2 ||
+    !dimensions.every((dimension) => Number.isFinite(dimension) && dimension > 0)
+  ) {
+    return undefined;
+  }
+  return dimensions[0] / dimensions[1];
+}
+
+function sessionAspectRatio(status?: GlobalStatusDetailedResponse | null): number {
+  const session = asRecord(status?.session);
+  const root = asRecord(status);
+  return (
+    parseAspectRatio(session?.aspectRatio) ??
+    parseAspectRatio(session?.aspect_ratio) ??
+    parseAspectRatio(root?.aspectRatio) ??
+    parseAspectRatio(root?.aspect_ratio) ??
+    DEFAULT_PREVIEW_ASPECT_RATIO
+  );
 }
 
 function resolveUrl(value: unknown): string | undefined {
@@ -425,6 +464,7 @@ export const BranchPreview = forwardRef<BranchPreviewHandle, BranchPreviewProps>
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackRun, setPlaybackRun] = useState(0);
   const [playbackNotice, setPlaybackNotice] = useState<string | null>(null);
+  const [measuredAspectRatios, setMeasuredAspectRatios] = useState<Record<string, number>>({});
   const activePath =
     (isPlaying ? playbackPath : undefined) ??
     playablePaths.find((path) => path.id === selectedPathId) ??
@@ -436,6 +476,14 @@ export const BranchPreview = forwardRef<BranchPreviewHandle, BranchPreviewProps>
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const audioRefs = useRef(new Map<string, HTMLAudioElement>());
+
+  const rememberAspectRatio = useCallback((url: string, width: number, height: number) => {
+    if (!(width > 0 && height > 0)) return;
+    const ratio = width / height;
+    setMeasuredAspectRatios((current) =>
+      current[url] === ratio ? current : { ...current, [url]: ratio },
+    );
+  }, []);
 
   const stopMedia = useCallback(() => {
     videoRef.current?.pause();
@@ -678,9 +726,21 @@ export const BranchPreview = forwardRef<BranchPreviewHandle, BranchPreviewProps>
   useEffect(() => stopMedia, [stopMedia]);
 
   const totalDuration = activePath?.scenes.reduce((sum, scene) => sum + scene.duration, 0) ?? 0;
+  const previewAspectRatio = activeScene
+    ? measuredAspectRatios[activeScene.asset.url] ?? sessionAspectRatio(status)
+    : sessionAspectRatio(status);
+  const previewStyle = {
+    "--preview-aspect-ratio": String(previewAspectRatio),
+    "--preview-portrait-width": `${previewAspectRatio * 72}dvh`,
+  } as CSSProperties;
 
   return (
-    <section className={styles.previewStage} aria-label="Interactive session preview">
+    <section
+      className={styles.previewStage}
+      style={previewStyle}
+      data-orientation={previewAspectRatio < 1 ? "portrait" : "landscape"}
+      aria-label="Interactive session preview"
+    >
       {activeScene ? (
         activeScene.asset.kind === "video" ? (
           <video
@@ -691,6 +751,13 @@ export const BranchPreview = forwardRef<BranchPreviewHandle, BranchPreviewProps>
             playsInline
             preload="auto"
             controls={activeScene.asset.includesAudio}
+            onLoadedMetadata={(event) => {
+              rememberAspectRatio(
+                activeScene.asset.url,
+                event.currentTarget.videoWidth,
+                event.currentTarget.videoHeight,
+              );
+            }}
           />
         ) : (
           // The media URL is generated at runtime, so Next Image cannot safely optimize it.
@@ -701,6 +768,13 @@ export const BranchPreview = forwardRef<BranchPreviewHandle, BranchPreviewProps>
             className={styles.previewMedia}
             src={activeScene.asset.url}
             alt={activeScene.title}
+            onLoad={(event) => {
+              rememberAspectRatio(
+                activeScene.asset.url,
+                event.currentTarget.naturalWidth,
+                event.currentTarget.naturalHeight,
+              );
+            }}
           />
         )
       ) : (

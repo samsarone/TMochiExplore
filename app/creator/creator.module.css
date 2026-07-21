@@ -642,14 +642,22 @@
 /* In-progress media preview */
 
 .previewStage {
+  --preview-aspect-ratio: 1.7777778;
+  --preview-portrait-width: 40.5dvh;
   position: relative;
-  min-height: 310px;
+  width: 100%;
+  aspect-ratio: var(--preview-aspect-ratio);
+  margin-inline: auto;
   overflow: hidden;
   background:
     linear-gradient(rgba(197, 255, 92, 0.022) 1px, transparent 1px),
     linear-gradient(90deg, rgba(197, 255, 92, 0.022) 1px, transparent 1px),
     #090b09;
   background-size: 34px 34px;
+}
+
+.previewStage[data-orientation="portrait"] {
+  width: min(100%, var(--preview-portrait-width));
 }
 
 .previewMedia {
@@ -662,7 +670,7 @@
   border: 0;
   background: radial-gradient(circle at center, rgba(197, 255, 92, 0.055), transparent 40%);
   color: #71796d;
-  object-fit: cover;
+  object-fit: contain;
   font: 8px var(--font-mono), monospace;
 }
 
@@ -856,7 +864,7 @@
 }
 
 .treeSection { min-height: 238px; overflow: hidden; }
-.livePreviewSection { min-height: 310px; margin-top: 18px; overflow: hidden; }
+.livePreviewSection { margin-top: 18px; overflow: hidden; }
 
 .sectionLabel {
   min-height: 46px;

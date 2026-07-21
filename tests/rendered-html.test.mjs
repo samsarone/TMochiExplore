@@ -21,7 +21,7 @@ test("server-renders the TMochiLearn interactive learning landing page", async (
 
   const html = await response.text();
   assert.match(html, /<title>TMochiLearn — Interactive Learning<\/title>/i);
-  assert.match(html, /Learn technical topics\.\s*<em>Deeply\.<\/em>/i);
+  assert.match(html, /Learn Topics\.\s*<em>Deeply<\/em>/);
   assert.match(html, /Every alternative outcome, explained/i);
   assert.match(html, /Every path, followed/i);
   assert.match(html, /Interactive lessons/i);
@@ -272,6 +272,9 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
   assert.match(studio, /Direct every <em>possible path\.<\/em>/);
   assert.match(branchPreview, /audio_timeline/);
   assert.match(branchPreview, /chooseRandomPath/);
+  assert.match(branchPreview, /sessionAspectRatio/);
+  assert.match(branchPreview, /onLoadedMetadata/);
+  assert.match(branchPreview, /naturalWidth/);
   assert.match(branchTree, /leaf_path_ids/);
   assert.match(completedPlayer, /switch_at_seconds/);
   assert.match(completedPlayer, /playerChoiceOverlay/);
@@ -301,6 +304,9 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
   assert.doesNotMatch(studioShellStyles, /(^|;)\s*height:\s*100dvh/);
   assert.doesNotMatch(studioShellStyles, /overflow-y:\s*auto/);
   assert.match(creatorStyles, /\.previewBody\s*\{[^}]*flex:\s*1 0 auto/);
+  assert.match(creatorStyles, /\.previewStage\s*\{[^}]*aspect-ratio:\s*var\(--preview-aspect-ratio\)/);
+  assert.match(creatorStyles, /\.previewMedia\s*\{[^}]*object-fit:\s*contain/);
+  assert.match(creatorStyles, /\.previewStage\[data-orientation="portrait"\]/);
   assert.match(samsarClient, /authToken/);
   assert.doesNotMatch(samsarClient, /apiKey[,\s:]/);
   assert.match(samsarAuth, /verifyWithConfiguredToken\(\)/);
