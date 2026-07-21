@@ -7,6 +7,7 @@ import {
   Film,
   GitFork,
   LoaderCircle,
+  Minimize2,
   Pause,
   Play,
   RotateCcw,
@@ -26,8 +27,8 @@ import type {
   InteractivePublicationVideoPath,
 } from "samsar-js";
 import Link from "next/link";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { flushSync } from "react-dom";
 import { TMochiLearnLogo } from "../components/tmochi-learn-logo";
 
@@ -52,6 +53,8 @@ type PlayerEntry = "internal" | "direct";
 type InteractivePlayerHandle = {
   playWithSound: () => Promise<void>;
 };
+
+type HoverPreviewState = "idle" | "playing" | "tree";
 
 type ChoiceTransitionWatch = {
   video: HTMLVideoElement;
@@ -225,12 +228,46 @@ function PublicationCard({
   prototype?: boolean;
 }) {
   const branches = publication.manifest.outputs.paths.length;
+  const [previewState, setPreviewState] = useState<HoverPreviewState>("idle");
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
+  const treeTimerRef = useRef<number | null>(null);
+  const previewLevels = [...new Set(publication.manifest.tree.choice_points.map((point) => point.level ?? 0))]
+    .sort((left, right) => left - right)
+    .map((level) => publication.manifest.tree.choice_points
+      .filter((point) => (point.level ?? 0) === level)
+      .flatMap((point) => point.options));
+
+  const stopPreview = () => {
+    if (treeTimerRef.current !== null) window.clearTimeout(treeTimerRef.current);
+    treeTimerRef.current = null;
+    const video = previewVideoRef.current;
+    if (video) {
+      video.pause();
+      video.currentTime = 0;
+    }
+    setPreviewState("idle");
+  };
+
+  const startPreview = (event: ReactPointerEvent<HTMLAnchorElement>) => {
+    if (event.pointerType === "touch") return;
+    setPreviewState("playing");
+    const video = previewVideoRef.current;
+    if (video) void video.play().catch(() => undefined);
+    treeTimerRef.current = window.setTimeout(() => setPreviewState("tree"), 2400);
+  };
+
+  useEffect(() => stopPreview, []);
+
   return (
     <article className={`film-card ${featured ? "film-card-featured" : ""}`}>
       <a
         className="film-poster"
         href={publicationPath(publication.id)}
         onClick={(event) => onPlay(publication, event)}
+        onPointerEnter={startPreview}
+        onPointerLeave={stopPreview}
+        onFocus={() => setPreviewState("tree")}
+        onBlur={stopPreview}
         aria-label={`Start ${publication.title}`}
       >
         <img
@@ -240,10 +277,38 @@ function PublicationCard({
           decoding="async"
           fetchPriority={featured ? "high" : "low"}
         />
+        <video
+          ref={previewVideoRef}
+          className={`poster-preview-video ${previewState !== "idle" ? "is-visible" : ""}`}
+          src={publication.mainVideoUrl}
+          muted
+          playsInline
+          preload="metadata"
+          aria-hidden="true"
+        />
         <span className="poster-shade" />
-        <span className="play-orbit">
+        <span className={`play-orbit ${previewState === "tree" ? "is-compact" : ""}`}>
           <Play size={featured ? 25 : 20} fill="currentColor" />
         </span>
+        {previewState === "tree" && previewLevels.length > 0 && (
+          <span className="poster-tree-preview" aria-hidden="true">
+            <span className="poster-tree-root"><GitFork size={13} /></span>
+            {previewLevels.map((options, levelIndex) => (
+              <span className="poster-tree-segment" key={levelIndex}>
+                <span className="poster-tree-line" />
+                <span className="poster-tree-options">
+                  {options.slice(0, 5).map((option) => <span key={option.child_node_id} />)}
+                </span>
+              </span>
+            ))}
+            <span className="poster-tree-segment">
+              <span className="poster-tree-line" />
+              <span className="poster-tree-options is-leaf">
+                {publication.manifest.outputs.paths.slice(0, 5).map((path) => <span key={path.path_id} />)}
+              </span>
+            </span>
+          </span>
+        )}
         <span className="card-badge">
           <GitFork size={13} /> {branches} paths
         </span>
@@ -253,7 +318,6 @@ function PublicationCard({
         <div className="film-card-copy">
           <div>
             <h3>{publication.title}</h3>
-            <p>@{publication.creatorHandle || "unknown"}</p>
           </div>
           <span>{formatTime(publication.duration)}</span>
         </div>
@@ -310,6 +374,210 @@ function LearnPublicationCard({
   );
 }
 
+function PublicationBranchTree({
+  publication,
+  activePathId,
+  selectedLeafPathId,
+  onSelectLeaf,
+  onRestart,
+}: {
+  publication: InteractivePublication;
+  activePathId: string;
+  selectedLeafPathId: string | null;
+  onSelectLeaf: (path: InteractivePublicationVideoPath) => void;
+  onRestart: () => void;
+}) {
+  const paths = publication.manifest.outputs.paths;
+  const choicePoints = [...publication.manifest.tree.choice_points]
+    .sort((left, right) => (left.level ?? 0) - (right.level ?? 0) || left.switch_at_seconds - right.switch_at_seconds);
+  type FlatTreeNode = {
+    id: string;
+    depth: number;
+    kind: "root" | "decision" | "leaf";
+    label: string;
+    leafIds: string[];
+    tone: number;
+    target?: InteractivePublicationVideoPath;
+    path?: InteractivePublicationVideoPath;
+  };
+
+  const rootId = publication.manifest.tree.root_node_id || "root";
+  const nodes = new Map<string, FlatTreeNode>();
+  const edges: Array<{ from: string; to: string }> = [];
+  nodes.set(rootId, {
+    id: rootId,
+    depth: 0,
+    kind: "root",
+    label: "Play from the start",
+    leafIds: paths.map((path) => path.path_id),
+    tone: 0,
+  });
+
+  choicePoints.forEach((point, pointIndex) => {
+    const depth = Math.max(1, (point.level ?? pointIndex) + 1);
+    const parentId = point.parent_node_id || rootId;
+    if (!nodes.has(parentId)) {
+      nodes.set(parentId, {
+        id: parentId,
+        depth: Math.max(1, depth - 1),
+        kind: "decision",
+        label: "Branch",
+        leafIds: [...new Set(point.options.flatMap((option) => option.leaf_path_ids))],
+        tone: pointIndex % 4,
+      });
+      edges.push({ from: rootId, to: parentId });
+    }
+
+    point.options.forEach((option, optionIndex) => {
+      const nodeId = option.child_node_id || `${point.branch_point_id}-${optionIndex}`;
+      const target = pathForOption(
+        option,
+        paths,
+        selectedLeafPathId || activePathId,
+        publication.manifest.default_path_id,
+      );
+      const existing = nodes.get(nodeId);
+      nodes.set(nodeId, {
+        id: nodeId,
+        depth: Math.max(existing?.depth ?? 0, depth),
+        kind: "decision",
+        label: option.branching_hint || option.path_name || "Branch",
+        leafIds: [...new Set([...(existing?.leafIds ?? []), ...option.leaf_path_ids])],
+        tone: (pointIndex + optionIndex) % 4,
+        target: target ?? existing?.target,
+      });
+      if (!edges.some((edge) => edge.from === parentId && edge.to === nodeId)) {
+        edges.push({ from: parentId, to: nodeId });
+      }
+    });
+  });
+
+  const decisionNodes = [...nodes.values()].filter((node) => node.kind === "decision");
+  const leafDepth = Math.max(0, ...decisionNodes.map((node) => node.depth)) + 1;
+  paths.forEach((path, index) => {
+    const parent = decisionNodes
+      .filter((node) => node.leafIds.includes(path.path_id))
+      .sort((left, right) => right.depth - left.depth)[0];
+    const leafId = `leaf:${path.path_id}`;
+    nodes.set(leafId, {
+      id: leafId,
+      depth: leafDepth,
+      kind: "leaf",
+      label: parent?.label || path.branching_hint || path.path_id,
+      leafIds: [path.path_id],
+      tone: index % 5,
+      target: path,
+      path,
+    });
+    edges.push({ from: parent?.id || rootId, to: leafId });
+  });
+
+  const maxDepth = Math.max(1, ...[...nodes.values()].map((node) => node.depth));
+  const pathOrder = new Map(paths.map((path, index) => [path.path_id, index]));
+  const layers = new Map<number, FlatTreeNode[]>();
+  nodes.forEach((node) => layers.set(node.depth, [...(layers.get(node.depth) ?? []), node]));
+  const scoreNode = (node: FlatTreeNode) => {
+    const indexes = node.leafIds.map((id) => pathOrder.get(id)).filter((value): value is number => value !== undefined);
+    return indexes.length ? indexes.reduce((total, value) => total + value, 0) / indexes.length : 0;
+  };
+  layers.forEach((layer) => layer.sort((left, right) => scoreNode(left) - scoreNode(right)));
+
+  const maxLayerSize = Math.max(1, ...[...layers.values()].map((layer) => layer.length));
+  const treeHeight = Math.max(96, Math.min(140, maxLayerSize * 21 + 12));
+  const positions = new Map<string, { x: number; y: number }>();
+  layers.forEach((layer, depth) => {
+    layer.forEach((node, index) => {
+      positions.set(node.id, {
+        x: 7 + (depth / maxDepth) * 61,
+        y: layer.length === 1 ? 50 : 10 + (index / (layer.length - 1)) * 80,
+      });
+    });
+  });
+
+  return (
+    <section className="branch-map" aria-label="Choose a final video path">
+      <div className="branch-map-canvas branch-map-horizontal">
+        <div className="flat-branch-tree" style={{ height: treeHeight }} role="tree" aria-label="Interactive video paths">
+          <svg className="flat-tree-edges" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">
+            {edges.map((edge) => {
+              const from = positions.get(edge.from);
+              const to = positions.get(edge.to);
+              if (!from || !to) return null;
+              const middle = ((from.x + to.x) / 2) * 10;
+              return (
+                <path
+                  d={`M ${from.x * 10} ${from.y * 10} C ${middle} ${from.y * 10}, ${middle} ${to.y * 10}, ${to.x * 10} ${to.y * 10}`}
+                  key={`${edge.from}-${edge.to}`}
+                  vectorEffect="non-scaling-stroke"
+                />
+              );
+            })}
+          </svg>
+
+          {[...nodes.values()].map((node) => {
+            const position = positions.get(node.id);
+            if (!position) return null;
+            if (node.kind === "root") {
+              return (
+                <button
+                  className="flat-tree-node branch-root-circle"
+                  style={{ left: `${position.x}%`, top: `${position.y}%` }}
+                  type="button"
+                  onClick={onRestart}
+                  aria-label="Play from the start"
+                  key={node.id}
+                >
+                  <Play size={13} fill="currentColor" />
+                </button>
+              );
+            }
+
+            if (node.kind === "leaf" && node.path) {
+              const selected = node.path.path_id === selectedLeafPathId;
+              const active = node.path.path_id === activePathId;
+              return (
+                <button
+                  className={`flat-tree-node branch-leaf tone-${node.tone} ${selected ? "is-selected" : ""} ${active ? "is-active" : ""}`}
+                  style={{ left: `${position.x}%`, top: `${position.y}%` }}
+                  type="button"
+                  onClick={() => onSelectLeaf(node.path!)}
+                  aria-pressed={selected}
+                  aria-label={`${selected ? "Locked path" : "Choose path"}: ${node.label}`}
+                  key={node.id}
+                >
+                  {node.path.thumbnailUrl && <img src={node.path.thumbnailUrl} alt="" />}
+                  <span className="branch-leaf-play"><Play size={12} fill="currentColor" /></span>
+                  <span className="branch-leaf-end">{node.label}</span>
+                </button>
+              );
+            }
+
+            const selected = Boolean(selectedLeafPathId && node.leafIds.includes(selectedLeafPathId));
+            return (
+              <button
+                className={`flat-tree-node branch-decision-node tone-${node.tone} ${selected ? "is-selected" : ""}`}
+                style={{ left: `${position.x}%`, top: `${position.y}%` }}
+                type="button"
+                onClick={() => node.target && onSelectLeaf(node.target)}
+                disabled={!node.target}
+                aria-label={node.label}
+                aria-pressed={selected}
+                key={node.id}
+              >
+                <span className="branch-node-dot" />
+                <span className="branch-node-hover">
+                  {node.target?.thumbnailUrl && <img src={node.target.thumbnailUrl} alt="" />}
+                  <span><b>{node.label}</b></span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   publication: InteractivePublication;
   onClose: () => void;
@@ -333,8 +601,12 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   const [switching, setSwitching] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [awaitingStart, setAwaitingStart] = useState(startPaused);
+  const [immersive, setImmersive] = useState(false);
+  const [selectedLeafPathId, setSelectedLeafPathId] = useState<string | null>(null);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const videoElementsRef = useRef(new Map<string, HTMLVideoElement>());
   const playerRef = useRef<HTMLDivElement>(null);
+  const playerShellRef = useRef<HTMLDivElement>(null);
   const resumeRef = useRef<{
     pathId: string;
     time: number;
@@ -349,8 +621,15 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     baseVolume: number;
   } | null>(null);
   const presentedChoiceIdRef = useRef<string | null>(null);
+  const selectedLeafPathIdRef = useRef<string | null>(null);
   const preloadedThumbnailUrlsRef = useRef(new Set<string>());
+  const initialPlaybackRequestedRef = useRef(false);
+  const fullscreenPlaybackRef = useRef<{ pathId: string; shouldResume: boolean } | null>(null);
   const activePath = paths.find((path) => path.path_id === activePathId) ?? defaultPath;
+
+  useEffect(() => {
+    selectedLeafPathIdRef.current = selectedLeafPathId;
+  }, [selectedLeafPathId]);
 
   const nextChoice = useMemo(() => {
     return [...publication.manifest.tree.choice_points]
@@ -382,8 +661,10 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
 
   const mountedPaths = useMemo(() => {
     if (!activePath) return bufferedPaths;
-    return [activePath, ...bufferedPaths];
-  }, [activePath, bufferedPaths]);
+    const selectedPath = paths.find((path) => path.path_id === selectedLeafPathId);
+    return [activePath, ...bufferedPaths, ...(selectedPath ? [selectedPath] : [])]
+      .filter((path, index, collection) => collection.findIndex((candidate) => candidate.path_id === path.path_id) === index);
+  }, [activePath, bufferedPaths, paths, selectedLeafPathId]);
 
   const nextChoiceThumbnailUrls = useMemo(() => {
     if (!nextChoice) return [];
@@ -403,6 +684,12 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     () => videoElementsRef.current.get(activePathId) ?? null,
     [activePathId],
   );
+
+  const pauseInactiveVideos = useCallback((keepPathId: string) => {
+    videoElementsRef.current.forEach((candidate, pathId) => {
+      if (pathId !== keepPathId && !candidate.paused) candidate.pause();
+    });
+  }, []);
 
   const clearChoiceTransitionWatch = useCallback(() => {
     const watch = choiceTransitionWatchRef.current;
@@ -471,13 +758,60 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
 
     presentedChoiceIdRef.current = choice.branch_point_id;
     clearChoiceTransitionWatch();
+    const lockedPathId = selectedLeafPathIdRef.current;
+    if (lockedPathId) {
+      const option = choice.options.find((candidate) => candidate.leaf_path_ids.includes(lockedPathId));
+      const target = option && pathForOption(
+        option,
+        paths,
+        lockedPathId,
+        publication.manifest.default_path_id,
+      );
+      if (!target) return;
+      const resumeAt = choice.switch_at_seconds + 0.04;
+      setHandledChoices((previous) => previous.includes(choice.branch_point_id)
+        ? previous
+        : [...previous, choice.branch_point_id]);
+      setPendingChoice(null);
+      setPreviewChoice(null);
+      if (target.path_id === activePathId) {
+        video.currentTime = resumeAt;
+        void video.play().catch(() => undefined);
+        return;
+      }
+      video.pause();
+      resumeRef.current = {
+        pathId: target.path_id,
+        time: resumeAt,
+        volume: video.volume,
+        muted: video.muted,
+        rate: video.playbackRate,
+      };
+      setSwitching(true);
+      setActivePathId(target.path_id);
+      const targetVideo = videoElementsRef.current.get(target.path_id);
+      if (targetVideo && targetVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
+        targetVideo.currentTime = Math.min(resumeAt, Math.max(targetVideo.duration - 0.1, 0));
+        targetVideo.volume = video.volume;
+        targetVideo.muted = video.muted;
+        targetVideo.playbackRate = video.playbackRate;
+        resumeRef.current = null;
+        setDuration(Number.isFinite(targetVideo.duration) ? targetVideo.duration : target.duration);
+        pauseInactiveVideos(target.path_id);
+        void targetVideo.play().catch(() => {
+          setPlaying(false);
+          setSwitching(false);
+        });
+      }
+      return;
+    }
     updateChoiceAudioFade(video, choice.switch_at_seconds, choice.switch_at_seconds);
     video.currentTime = choice.switch_at_seconds;
     video.pause();
     setCurrentTime(choice.switch_at_seconds);
     setPreviewChoice(choice);
     setPendingChoice(choice);
-  }, [activePathId, clearChoiceTransitionWatch, updateChoiceAudioFade]);
+  }, [activePathId, clearChoiceTransitionWatch, paths, pauseInactiveVideos, publication.manifest.default_path_id, updateChoiceAudioFade]);
 
   const playWithSound = useCallback(async () => {
     const video = getActiveVideo();
@@ -496,6 +830,12 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   }, [getActiveVideo, pendingChoice]);
 
   useImperativeHandle(ref, () => ({ playWithSound }), [playWithSound]);
+
+  useLayoutEffect(() => {
+    if (startPaused || initialPlaybackRequestedRef.current) return;
+    initialPlaybackRequestedRef.current = true;
+    void playWithSound();
+  }, [playWithSound, startPaused]);
 
   const togglePlay = useCallback(async () => {
     const video = getActiveVideo();
@@ -529,6 +869,11 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
   }, [clearControlsTimer]);
 
   useEffect(() => {
+    window.addEventListener("scroll", revealControls, { passive: true });
+    return () => window.removeEventListener("scroll", revealControls);
+  }, [revealControls]);
+
+  useEffect(() => {
     let active = true;
     queueMicrotask(() => {
       if (!active) return;
@@ -555,7 +900,10 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     const watch: ChoiceTransitionWatch = { video };
     choiceTransitionWatchRef.current = watch;
     const switchAt = nextChoice.switch_at_seconds;
-    const audioFadeAt = Math.max(0, switchAt - CHOICE_AUDIO_FADE_LEAD_SECONDS);
+    const routeIsLocked = Boolean(selectedLeafPathIdRef.current);
+    const audioFadeAt = routeIsLocked
+      ? switchAt
+      : Math.max(0, switchAt - CHOICE_AUDIO_FADE_LEAD_SECONDS);
     const previewAt = Math.max(0, switchAt - CHOICE_FADE_LEAD_SECONDS);
     const fadeAudio = () => {
       if (
@@ -583,7 +931,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
       ) {
         return;
       }
-      setPreviewChoice(nextChoice);
+      if (!selectedLeafPathIdRef.current) setPreviewChoice(nextChoice);
     };
     const stopAtBoundary = () => {
       if (
@@ -600,20 +948,22 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     const previewDelay = Math.max(0, ((previewAt - video.currentTime) / playbackRate) * 1_000);
     const boundaryDelay = Math.max(0, ((switchAt - video.currentTime) / playbackRate) * 1_000);
 
-    watch.audioFadeTimeoutId = window.setTimeout(startAudioFade, audioFadeDelay);
-    watch.previewTimeoutId = window.setTimeout(showPreview, previewDelay);
+    if (!routeIsLocked) {
+      watch.audioFadeTimeoutId = window.setTimeout(startAudioFade, audioFadeDelay);
+      watch.previewTimeoutId = window.setTimeout(showPreview, previewDelay);
+    }
     watch.boundaryTimeoutId = window.setTimeout(stopAtBoundary, boundaryDelay);
 
     if (typeof video.requestVideoFrameCallback === "function") {
       const inspectFrame: VideoFrameRequestCallback = (_now, metadata) => {
         if (choiceTransitionWatchRef.current !== watch) return;
         const mediaTime = Math.max(metadata.mediaTime, video.currentTime);
-        if (mediaTime >= audioFadeAt) updateChoiceAudioFade(video, switchAt, mediaTime);
+        if (!routeIsLocked && mediaTime >= audioFadeAt) updateChoiceAudioFade(video, switchAt, mediaTime);
         if (mediaTime >= switchAt) {
           stopAtBoundary();
           return;
         }
-        if (mediaTime >= previewAt) showPreview();
+        if (!routeIsLocked && mediaTime >= previewAt) showPreview();
         watch.frameCallbackId = video.requestVideoFrameCallback(inspectFrame);
       };
       watch.frameCallbackId = video.requestVideoFrameCallback(inspectFrame);
@@ -629,6 +979,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     playbackRate,
     playing,
     presentChoiceAtBoundary,
+    selectedLeafPathId,
     switching,
     updateChoiceAudioFade,
   ]);
@@ -695,26 +1046,55 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape" && !document.fullscreenElement) {
+        if (immersive) setImmersive(false);
+        else onClose();
+      }
       if (event.key === " " && event.target === document.body) {
         event.preventDefault();
         void togglePlay();
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    document.body.classList.add("player-open");
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [immersive, onClose, togglePlay]);
+
+  const restoreFullscreenPlayback = useCallback(() => {
+    const snapshot = fullscreenPlaybackRef.current;
+    if (!snapshot) return;
+    fullscreenPlaybackRef.current = null;
+    if (!snapshot.shouldResume) return;
+
+    const video = videoElementsRef.current.get(snapshot.pathId);
+    if (!video || !video.paused) return;
+    pauseInactiveVideos(snapshot.pathId);
+    void video.play().catch(() => {
+      setPlaying(false);
+      setAwaitingStart(true);
+    });
+  }, [pauseInactiveVideos]);
+
+  useEffect(() => {
+    const syncFullscreen = () => {
+      if (!document.fullscreenElement) setImmersive(false);
+      restoreFullscreenPlayback();
+    };
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    document.body.classList.toggle("player-open", immersive);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreen);
       document.body.classList.remove("player-open");
     };
-  }, [onClose, togglePlay]);
+  }, [immersive, restoreFullscreenPlayback]);
 
   if (!activePath) return null;
 
   const handleTimeUpdate = (video: HTMLVideoElement, pathId: string) => {
     if (pathId !== activePathId) return;
     setCurrentTime(video.currentTime);
-    if (nextChoice) {
+    if (nextChoice && !selectedLeafPathIdRef.current) {
       updateChoiceAudioFade(video, nextChoice.switch_at_seconds, video.currentTime);
     }
     if (nextChoice && video.currentTime >= nextChoice.switch_at_seconds) {
@@ -722,31 +1102,37 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     }
   };
 
-  const chooseBranch = (option: InteractivePublicationChoiceOption) => {
-    if (!pendingChoice) return;
+  const applyBranchChoice = (
+    choice: InteractivePublicationChoicePoint,
+    option: InteractivePublicationChoiceOption,
+  ) => {
     const video = getActiveVideo();
     const target = pathForOption(
       option,
       paths,
-      activePathId,
+      selectedLeafPathIdRef.current || activePathId,
       publication.manifest.default_path_id,
     );
     if (!target || !video) return;
 
-    const resumeAt = pendingChoice.switch_at_seconds + 0.04;
+    const resumeAt = choice.switch_at_seconds + 0.04;
     const resumeVolume = restoreChoiceAudioVolume(video);
     clearChoiceTransitionWatch();
     presentedChoiceIdRef.current = null;
-    setHandledChoices((previous) => [...previous, pendingChoice.branch_point_id]);
+    setHandledChoices((previous) => previous.includes(choice.branch_point_id)
+      ? previous
+      : [...previous, choice.branch_point_id]);
     setPendingChoice(null);
     setPreviewChoice(null);
 
     if (target.path_id === activePathId) {
       video.currentTime = resumeAt;
+      pauseInactiveVideos(activePathId);
       void video.play().catch(() => undefined);
       return;
     }
 
+    video.pause();
     resumeRef.current = {
       pathId: target.path_id,
       time: resumeAt,
@@ -773,10 +1159,86 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
         setSwitching(false);
       };
       bufferedVideo.addEventListener("playing", handlePlaying, { once: true });
+      pauseInactiveVideos(target.path_id);
       void bufferedVideo.play().catch(() => {
         bufferedVideo.removeEventListener("playing", handlePlaying);
         setPlaying(false);
         setSwitching(false);
+      });
+    }
+  };
+
+  const chooseBranch = (option: InteractivePublicationChoiceOption) => {
+    if (pendingChoice) applyBranchChoice(pendingChoice, option);
+  };
+
+  const selectLeafPath = (target: InteractivePublicationVideoPath) => {
+    const video = getActiveVideo();
+    const selectedPathId = target.path_id;
+    selectedLeafPathIdRef.current = selectedPathId;
+    setSelectedLeafPathId(selectedPathId);
+    clearChoiceTransitionWatch();
+    restoreChoiceAudioVolume(video);
+    setPendingChoice(null);
+    setPreviewChoice(null);
+    presentedChoiceIdRef.current = null;
+
+    const choicesSoFar = publication.manifest.tree.choice_points.filter(
+      (choice) => choice.switch_at_seconds <= currentTime,
+    );
+    const routeIsAligned = choicesSoFar.every((choice) => {
+      const currentOption = choice.options.find((option) => option.leaf_path_ids.includes(activePathId));
+      const selectedOption = choice.options.find((option) => option.leaf_path_ids.includes(selectedPathId));
+      return !currentOption || !selectedOption || currentOption.child_node_id === selectedOption.child_node_id;
+    });
+
+    if (activePathId === selectedPathId || routeIsAligned) {
+      if (video) {
+        setAwaitingStart(false);
+        pauseInactiveVideos(activePathId);
+        if (video.paused) void video.play().catch(() => setAwaitingStart(true));
+      }
+      return;
+    }
+
+    const lastDivergentParent = choicesSoFar
+      .filter((choice) => {
+        const currentOption = choice.options.find((option) => option.leaf_path_ids.includes(activePathId));
+        const selectedOption = choice.options.find((option) => option.leaf_path_ids.includes(selectedPathId));
+        return Boolean(currentOption && selectedOption && currentOption.child_node_id !== selectedOption.child_node_id);
+      })
+      .sort((left, right) => right.switch_at_seconds - left.switch_at_seconds)[0];
+    const resumeAt = awaitingStart ? 0 : (lastDivergentParent?.switch_at_seconds ?? 0) + (lastDivergentParent ? 0.04 : 0);
+    const resumeVolume = video?.volume ?? 1;
+    video?.pause();
+    setHandledChoices(
+      publication.manifest.tree.choice_points
+        .filter((choice) => choice.switch_at_seconds < resumeAt)
+        .map((choice) => choice.branch_point_id),
+    );
+    resumeRef.current = {
+      pathId: selectedPathId,
+      time: resumeAt,
+      volume: resumeVolume,
+      muted: video?.muted ?? muted,
+      rate: video?.playbackRate ?? playbackRate,
+    };
+    setSwitching(true);
+    setAwaitingStart(false);
+    setActivePathId(selectedPathId);
+    const selectedVideo = videoElementsRef.current.get(selectedPathId);
+    if (selectedVideo && selectedVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      selectedVideo.currentTime = Math.min(resumeAt, Math.max(selectedVideo.duration - 0.1, 0));
+      selectedVideo.volume = resumeVolume;
+      selectedVideo.muted = video?.muted ?? muted;
+      selectedVideo.playbackRate = video?.playbackRate ?? playbackRate;
+      resumeRef.current = null;
+      setDuration(Number.isFinite(selectedVideo.duration) ? selectedVideo.duration : target.duration);
+      pauseInactiveVideos(selectedPathId);
+      void selectedVideo.play().catch(() => {
+        setPlaying(false);
+        setSwitching(false);
+        setAwaitingStart(true);
       });
     }
   };
@@ -795,6 +1257,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
       video.muted = resume.muted;
       video.playbackRate = resume.rate;
       resumeRef.current = null;
+      pauseInactiveVideos(path.path_id);
       void video.play().catch(() => {
         setPlaying(false);
         setSwitching(false);
@@ -804,37 +1267,42 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
 
   const restart = () => {
     const video = getActiveVideo();
+    const restartPath = defaultPath;
     const restartVolume = restoreChoiceAudioVolume(video);
     clearChoiceTransitionWatch();
     presentedChoiceIdRef.current = null;
+    selectedLeafPathIdRef.current = null;
+    setSelectedLeafPathId(null);
     setHandledChoices([]);
     setPendingChoice(null);
     setPreviewChoice(null);
-    if (activePathId !== defaultPath.path_id) {
+    setAwaitingStart(false);
+    if (activePathId !== restartPath.path_id) {
       video?.pause();
       resumeRef.current = {
-        pathId: defaultPath.path_id,
+        pathId: restartPath.path_id,
         time: 0,
         volume: restartVolume,
         muted,
         rate: playbackRate,
       };
       setSwitching(true);
-      setActivePathId(defaultPath.path_id);
+      setActivePathId(restartPath.path_id);
 
-      const bufferedDefault = videoElementsRef.current.get(defaultPath.path_id);
+      const bufferedDefault = videoElementsRef.current.get(restartPath.path_id);
       if (bufferedDefault && bufferedDefault.readyState >= HTMLMediaElement.HAVE_METADATA) {
         bufferedDefault.currentTime = 0;
         bufferedDefault.volume = restartVolume;
         bufferedDefault.muted = muted;
         bufferedDefault.playbackRate = playbackRate;
         resumeRef.current = null;
-        setDuration(Number.isFinite(bufferedDefault.duration) ? bufferedDefault.duration : defaultPath.duration);
+        setDuration(Number.isFinite(bufferedDefault.duration) ? bufferedDefault.duration : restartPath.duration);
         const handlePlaying = () => {
           setPlaying(true);
           setSwitching(false);
         };
         bufferedDefault.addEventListener("playing", handlePlaying, { once: true });
+        pauseInactiveVideos(restartPath.path_id);
         void bufferedDefault.play().catch(() => {
           bufferedDefault.removeEventListener("playing", handlePlaying);
           setPlaying(false);
@@ -851,7 +1319,9 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     const video = getActiveVideo();
     if (!video || pendingChoice) return;
     video.currentTime = value;
-    if (nextChoice) updateChoiceAudioFade(video, nextChoice.switch_at_seconds, value);
+    if (nextChoice && !selectedLeafPathIdRef.current) {
+      updateChoiceAudioFade(video, nextChoice.switch_at_seconds, value);
+    }
     setCurrentTime(value);
   };
 
@@ -870,28 +1340,59 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
     setPlaybackRate(next);
   };
 
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      void playerRef.current?.requestFullscreen();
-    } else {
-      void document.exitFullscreen();
+  const toggleFullscreen = async () => {
+    const video = getActiveVideo();
+    fullscreenPlaybackRef.current = {
+      pathId: activePathId,
+      shouldResume: Boolean(video && !video.paused && !video.ended),
+    };
+
+    if (immersive) {
+      if (document.fullscreenElement) await document.exitFullscreen().catch(() => undefined);
+      setImmersive(false);
+      restoreFullscreenPlayback();
+      return;
     }
+
+    setImmersive(true);
+    await playerShellRef.current?.requestFullscreen().catch(() => undefined);
+    restoreFullscreenPlayback();
   };
 
-  const displayedChoice = pendingChoice ?? previewChoice;
+  const displayedChoice = selectedLeafPathId ? null : pendingChoice ?? previewChoice;
   const secondsUntilChoice = nextChoice
     ? nextChoice.switch_at_seconds - currentTime
     : Number.POSITIVE_INFINITY;
   const showChoicePrompt = Boolean(
     playing &&
     nextChoice &&
+    !selectedLeafPathId &&
     !displayedChoice &&
     secondsUntilChoice <= CHOICE_PROMPT_LEAD_SECONDS &&
     secondsUntilChoice > CHOICE_FADE_LEAD_SECONDS,
   );
 
   return (
-    <div className="player-shell" role="dialog" aria-modal="true" aria-label={`Playing ${publication.title}`}>
+    <div
+      className={`player-shell ${immersive ? "is-immersive" : "is-standard"} ${playing && !controlsVisible ? "is-idle-playing" : ""}`}
+      ref={playerShellRef}
+      onPointerMove={revealControls}
+      aria-label={`Playing ${publication.title}`}
+    >
+      {!immersive && (
+        <header className="site-header watch-header">
+          <Link className="brand" href="/" aria-label="TMochiLearn home"><TMochiLearnLogo /></Link>
+          <nav className="site-nav" aria-label="Main navigation">
+            <Link href="/" aria-current="page">Watch</Link>
+            <Link href="/learn">Explore</Link>
+          </nav>
+          <Link className="publish-button" href="/creator">
+            <WandSparkles size={16} />
+            Create
+          </Link>
+        </header>
+      )}
+      <div className="watch-content">
       <div
         className={`player-stage ${controlsVisible ? "controls-visible" : "controls-hidden"}`}
         ref={playerRef}
@@ -912,9 +1413,15 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
             <span className="topbar-divider" />
             <strong>{publication.title}</strong>
           </div>
-          <button type="button" onClick={onClose} aria-label="Close player">
-            <X size={20} />
-          </button>
+          {immersive && (
+            <button
+              type="button"
+              onClick={() => void toggleFullscreen()}
+              aria-label="Return to standard view"
+            >
+              <Minimize2 size={20} />
+            </button>
+          )}
         </div>
 
         {mountedPaths.map((path) => {
@@ -942,6 +1449,7 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
               onTimeUpdate={isActive ? (event) => handleTimeUpdate(event.currentTarget, path.path_id) : undefined}
               onPlay={() => {
                 if (isActive) {
+                  pauseInactiveVideos(path.path_id);
                   setPlaying(true);
                   setAwaitingStart(false);
                 }
@@ -1067,11 +1575,45 @@ const InteractivePlayer = forwardRef<InteractivePlayerHandle, {
               <GitFork size={15} />
               <span>{activePath.branching_hint || activePath.path_id}</span>
             </div>
-            <button type="button" onClick={toggleFullscreen} aria-label="Toggle fullscreen">
-              <Expand size={19} />
+            <button type="button" onClick={() => void toggleFullscreen()} aria-label={immersive ? "Return to standard view" : "Open immersive view"}>
+              {immersive ? <Minimize2 size={19} /> : <Expand size={19} />}
             </button>
           </div>
         </div>
+      </div>
+      {!immersive && (
+        <>
+          <PublicationBranchTree
+            publication={publication}
+            activePathId={activePathId}
+            selectedLeafPathId={selectedLeafPathId}
+            onSelectLeaf={selectLeafPath}
+            onRestart={restart}
+          />
+          <section className="watch-summary">
+            <div>
+              <h1>{publication.title}</h1>
+            </div>
+            <div className="watch-description">
+              <p className={descriptionExpanded ? "is-expanded" : ""}>{publication.description}</p>
+              {publication.description.length > 120 && (
+                <button
+                  type="button"
+                  onClick={() => setDescriptionExpanded((expanded) => !expanded)}
+                  aria-expanded={descriptionExpanded}
+                >
+                  {descriptionExpanded ? "View less" : "View more"}
+                </button>
+              )}
+            </div>
+            <div className="watch-summary-meta">
+              <span>@{publication.creatorHandle || "unknown"}</span>
+              <span>{paths.length} final paths</span>
+              <span>{formatTime(publication.duration)}</span>
+            </div>
+          </section>
+        </>
+      )}
       </div>
     </div>
   );
@@ -1204,6 +1746,16 @@ export default function Home({
     };
   }, [clearPlayerRoute, initialPublication?.id, initialPublicationId, loadPublicationRoute]);
 
+  useLayoutEffect(() => {
+    if (!selected && !routeLoading) return;
+    const previousRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = "manual";
+    window.scrollTo(0, 0);
+    return () => {
+      window.history.scrollRestoration = previousRestoration;
+    };
+  }, [routeLoading, selected]);
+
   const livePublications = response?.items ?? [];
   const eligiblePublications = isLearn
     ? livePublications.filter((publication) =>
@@ -1297,6 +1849,33 @@ export default function Home({
       window.location.assign("/creator");
     }
   }, [creatingSession]);
+
+  if (selected) {
+    return (
+      <main className="watch-page">
+        <InteractivePlayer
+          key={selected.id}
+          ref={playerHandleRef}
+          publication={selected}
+          onClose={closePlayer}
+          startPaused={playerEntry === "direct"}
+        />
+      </main>
+    );
+  }
+
+  if (routeLoading || routeError) {
+    return (
+      <main className="watch-page">
+        <div className="player-route-state" role="status" aria-live="polite">
+          {routeLoading ? <LoaderCircle size={28} /> : <Film size={30} />}
+          <h1>{routeLoading ? "Loading interactive lesson" : "Lesson unavailable"}</h1>
+          {routeError && <p>{routeError}</p>}
+          {routeError && <button type="button" onClick={returnToLanding}>Back to lessons</button>}
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className={isLearn ? "learn-page" : undefined}>
@@ -1427,44 +2006,25 @@ export default function Home({
         </>
       ) : (
         <>
-          <section className="hero" id="top">
-            <div className="hero-feature">
-              {featured ? (
-                <PublicationCard publication={featured} onPlay={openPlayer} featured prototype={isPrototype} />
-              ) : (
-                <div className="feature-placeholder">
-                  {loading ? <LoaderCircle size={26} /> : <Film size={28} />}
-                  <span>{loading ? "Loading the learning feed" : "Awaiting the next lesson"}</span>
-                </div>
-              )}
-              <div className="hero-overlay">
-                <h1>Learn Topics. <em>Deeply</em></h1>
-                <p className="hero-summary">
-                  <span className="hero-summary-line"><span>Every alternative outcome, explained.</span></span>
-                  <span className="hero-summary-line"><span>Every path, followed.</span></span>
-                  <span className="hero-summary-line"><span>Every decision builds deeper understanding.</span></span>
-                </p>
+          <section className="featured-landing" id="top" aria-label="Featured interactive video">
+            {featured ? (
+              <PublicationCard publication={featured} onPlay={openPlayer} featured prototype={isPrototype} />
+            ) : (
+              <div className="feature-placeholder">
+                {loading ? <LoaderCircle size={26} /> : <Film size={28} />}
               </div>
-            </div>
+            )}
           </section>
-
-          <section className="explore-section" id="explore">
-            <div className="section-heading">
-              <div><span className="eyebrow">Ready to learn</span><h2>Interactive lessons</h2></div>
-              <div className="catalog-tools">
-                <label className="search-box">
-                  <Search size={17} />
-                  <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search lessons" aria-label="Search interactive lessons" />
-                  {search && <button type="button" onClick={() => setSearch("")} aria-label="Clear search"><X size={14} /></button>}
-                </label>
-                <span className="catalog-count">{isPrototype ? "Preview mode" : `${response?.totalCount ?? publications.length} lessons`}</span>
-              </div>
+          {featured && (
+            <div className="featured-title">
+              <h1>{featured.title}</h1>
             </div>
-            {isPrototype && <div className="prototype-note"><span><Sparkles size={15} /></span><p><strong>The learning catalog is ready.</strong> No lessons are published yet, so this preview lets you try the branching player now.</p></div>}
+          )}
+
+          <section className="explore-section catalog-grid-section" id="explore">
             {error && <div className="catalog-state"><Film size={28} /><h3>Signal interrupted</h3><p>{error}</p><button type="button" onClick={() => void loadPublications()}>Try again</button></div>}
-            {loading && <div className="film-grid" aria-label="Loading films">{[0, 1, 2].map((item) => <div className="film-skeleton" key={item} />)}</div>}
+            {loading && <div className="film-grid" aria-label="Loading films">{[0, 1, 2, 3, 4, 5].map((item) => <div className="film-skeleton" key={item} />)}</div>}
             {!loading && !error && feedItems.length > 0 && <div className="film-grid">{feedItems.map((publication) => <PublicationCard key={publication.id} publication={publication} onPlay={openPlayer} prototype={isPrototype} />)}</div>}
-            {!loading && !error && hasSearch && feedItems.length === 0 && <div className="catalog-state compact"><Search size={24} /><h3>No matching lessons</h3><p>Try a different title, creator, or topic.</p></div>}
             {response?.hasMore && !search && <button className="load-more" type="button" disabled={loadingMore} onClick={() => response.nextCursor && void loadPublications(response.nextCursor)}>{loadingMore ? <LoaderCircle size={17} /> : <ChevronDown size={17} />}{loadingMore ? "Loading" : "Load more lessons"}</button>}
           </section>
         </>
@@ -1475,25 +2035,6 @@ export default function Home({
         <p>Interactive lessons, shaped by every choice.</p>
         <span>Powered by Samsar</span>
       </footer>
-
-      {selected && (
-        <InteractivePlayer
-          key={selected.id}
-          ref={playerHandleRef}
-          publication={selected}
-          onClose={closePlayer}
-          startPaused={playerEntry === "direct"}
-        />
-      )}
-
-      {!selected && (routeLoading || routeError) && (
-        <div className="player-route-state" role="status" aria-live="polite">
-          {routeLoading ? <LoaderCircle size={28} /> : <Film size={30} />}
-          <h1>{routeLoading ? "Loading interactive film" : "Film unavailable"}</h1>
-          {routeError && <p>{routeError}</p>}
-          {routeError && <button type="button" onClick={returnToLanding}>Back to films</button>}
-        </div>
-      )}
 
     </main>
   );

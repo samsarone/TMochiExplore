@@ -100,6 +100,15 @@ The Samsar API defaults to `https://api.samsar.one/v1`. Set
 signed-in user’s shared Samsar bearer session. Additional artifact hosts can be
 provided with the comma-separated `SAMSAR_ARTIFACT_HOSTS` value.
 
+To preview the local UI against the live production publication catalog, run:
+
+```bash
+npm run dev:production-catalog
+```
+
+This only reads the public production catalog for the viewer. Creator actions
+still require a signed-in Samsar session.
+
 For Vercel, use the Next.js framework preset and the standard `npm run build`
 output. The optional Cloudflare Worker workflow is available through
 `npm run dev:worker`, `npm run build:worker`, and `npm run start:worker`.

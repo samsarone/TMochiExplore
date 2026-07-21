@@ -21,10 +21,10 @@ test("server-renders the TMochiLearn interactive learning landing page", async (
 
   const html = await response.text();
   assert.match(html, /<title>TMochiLearn — Interactive Learning<\/title>/i);
-  assert.match(html, /Learn Topics\.\s*<em>Deeply<\/em>/);
-  assert.match(html, /Every alternative outcome, explained/i);
-  assert.match(html, /Every path, followed/i);
-  assert.match(html, /Interactive lessons/i);
+  assert.match(html, /Featured interactive video/i);
+  assert.doesNotMatch(html, /<h2>Explore<\/h2>/i);
+  assert.doesNotMatch(html, /Search interactive lessons/i);
+  assert.doesNotMatch(html, /Learn every path|Understand deeply/i);
   assert.match(html, /lucide-wand-sparkles/i);
   assert.match(html, />Create<\/button>/i);
   assert.match(html, /<nav[^>]*aria-label="Main navigation"/i);
@@ -58,7 +58,7 @@ test("server-renders shared player URLs in a paused loading state", async () => 
   assert.equal(response.status, 200);
 
   const html = await response.text();
-  assert.match(html, /Loading interactive film/i);
+  assert.match(html, /Loading interactive lesson/i);
   assert.doesNotMatch(html, /autoPlay/i);
 });
 
@@ -96,12 +96,26 @@ test("keeps the viewer wired to the public interactive publication contract", as
   ]);
 
   assert.match(page, /InteractivePlayer/);
+  assert.match(page, /PublicationBranchTree/);
+  assert.match(page, /onClick=\{\(\) => node\.target && onSelectLeaf\(node\.target\)\}/);
+  assert.match(page, /onRestart=\{restart\}/);
+  assert.match(page, /selectedLeafPathId/);
+  assert.match(page, /pauseInactiveVideos/);
+  assert.match(page, /nextChoice && !selectedLeafPathIdRef\.current/);
+  assert.match(page, /poster-preview-video/);
+  assert.match(page, /poster-tree-preview/);
+  assert.match(page, /className="site-header watch-header"/);
+  assert.match(page, /featured-title/);
+  assert.doesNotMatch(page, /branch-leaf-hover/);
+  assert.doesNotMatch(page, /aria-label=\{immersive \? "Return to standard view" : "Close player"\}/);
   assert.match(page, /branch_point_id/);
   assert.match(page, /leaf_path_ids/);
   assert.match(page, /switch_at_seconds/);
   assert.doesNotMatch(page, /Decision point|Left path|Right path/);
   assert.match(page, /handledChoices\.length === 0/);
   assert.match(page, /requestFullscreen/);
+  assert.match(page, /is-immersive/);
+  assert.match(page, /Return to standard view/);
   assert.match(page, /controls-hidden/);
   assert.match(page, /CHOICE_AUDIO_FADE_LEAD_SECONDS/);
   assert.match(page, /updateChoiceAudioFade/);
@@ -119,6 +133,14 @@ test("keeps the viewer wired to the public interactive publication contract", as
   assert.match(page, /loading=\{featured \? "eager" : "lazy"\}/);
   assert.match(page, /publication\.mainVideoUrl \|\| path\.contentUrl/);
   assert.match(page, /playWithSound/);
+  assert.match(page, /initialPlaybackRequestedRef/);
+  assert.match(page, /fullscreenPlaybackRef/);
+  assert.match(page, /!selectedLeafPathId/);
+  assert.match(page, /selectedLeafPathIdRef\.current = null/);
+  assert.match(page, /descriptionExpanded/);
+  assert.match(page, /is-idle-playing/);
+  assert.match(page, /addEventListener\("scroll", revealControls/);
+  assert.doesNotMatch(page, /Now exploring/);
   assert.doesNotMatch(page, />Play with sound</);
   assert.match(page, /startPaused/);
   assert.match(page, /history\.pushState/);
@@ -126,11 +148,19 @@ test("keeps the viewer wired to the public interactive publication contract", as
   assert.doesNotMatch(page, /autoPlay=/);
   assert.doesNotMatch(page, /requestAnimationFrame/);
   assert.doesNotMatch(page, /rel="preload" as="video"/);
-  assert.doesNotMatch(page, /Cinema with a pulse|Featured interactive/);
-  assert.equal(page.match(/hero-summary-line/g)?.length, 3);
-  assert.match(styles, /@keyframes hero-summary-type/);
-  assert.match(styles, /hero-summary-caret/);
-  assert.match(styles, /\.hero-summary-line > span \{ clip-path: none; animation: none; \}/);
+  assert.doesNotMatch(page, /Cinema with a pulse/);
+  assert.match(styles, /\.featured-landing/);
+  assert.match(styles, /\.film-grid \{ grid-template-columns: repeat\(3/);
+  assert.match(styles, /\.branch-map/);
+  assert.match(styles, /\.branch-track/);
+  assert.match(styles, /\.flat-branch-tree/);
+  assert.match(styles, /\.flat-tree-edges/);
+  assert.match(styles, /\.branch-leaf-end/);
+  assert.match(styles, /\.featured-title/);
+  assert.match(styles, /\.player-shell\.is-standard\.is-idle-playing/);
+  assert.match(styles, /\.branch-root-circle/);
+  assert.match(styles, /\.branch-leaf\.is-selected/);
+  assert.match(styles, /\.player-shell\.is-immersive/);
   assert.match(route, /listInteractivePublications/);
   assert.match(route, /category/);
   assert.match(route, /topic/);

@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
+    "dev:production-catalog": "SAMSAR_API_BASE_URL=https://api.samsar.one/v1 next dev",
     "build": "next build",
     "start": "next start",
     "dev:worker": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
