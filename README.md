@@ -97,8 +97,11 @@ authentication, branching contracts, generation flow, and publishing tools.
 
 The Samsar API defaults to `https://api.samsar.one/v1`. Set
 `SAMSAR_API_BASE_URL` to use another API origin. Creator requests use the
-signed-in user’s shared Samsar bearer session. Additional artifact hosts can be
-provided with the comma-separated `SAMSAR_ARTIFACT_HOSTS` value.
+signed-in user’s shared Samsar bearer session. Creator image and video options
+are loaded server-side from the public `/video/supported_models` Express model
+catalog and submissions are revalidated against that catalog. Additional
+artifact hosts can be provided with the comma-separated `SAMSAR_ARTIFACT_HOSTS`
+value.
 
 To preview the local UI against the live production publication catalog, run:
 

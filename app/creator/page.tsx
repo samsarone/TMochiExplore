@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { loadCreatorModelCatalog } from "../../lib/creator-model-catalog";
 import { verifySamsarUser } from "../../lib/samsar-auth";
 import CreatorLogin from "./creator-login";
 import CreatorStudio from "./creator-studio";
@@ -12,5 +13,15 @@ export const metadata: Metadata = {
 
 export default async function CreatorPage() {
   const user = await verifySamsarUser();
-  return user ? <CreatorStudio initialUser={user} /> : <CreatorLogin redirectPath="/creator" />;
+  if (!user) return <CreatorLogin redirectPath="/creator" />;
+
+  const { catalog, error } = await loadCreatorModelCatalog();
+  return (
+    <CreatorStudio
+      initialUser={user}
+      initialImageModels={catalog.imageModels}
+      initialVideoModels={catalog.videoModels}
+      initialModelCatalogError={error}
+    />
+  );
 }

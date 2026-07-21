@@ -3,9 +3,9 @@ import type {
   TextToInteractiveVideoImageModel,
 } from "samsar-js";
 import {
-  IMAGE_MODELS,
-  VIDEO_MODELS,
-} from "../../../../lib/creator-config";
+  CREATOR_MODEL_CATALOG_ERROR,
+  getCreatorModelCatalog,
+} from "../../../../lib/creator-model-catalog";
 import {
   getAuthenticatedSamsarClient,
   samsarErrorResponse,
@@ -41,6 +41,17 @@ export async function POST(request: Request) {
   const clientRequestId = stringValue(body.client_request_id ?? body.clientRequestId);
   const draftSessionId = stringValue(body.draft_session_id ?? body.draftSessionId).slice(0, 200);
 
+  let modelCatalog;
+  try {
+    modelCatalog = await getCreatorModelCatalog();
+  } catch (error) {
+    console.error("[tmochi_creator] unable to validate Express model catalog", error);
+    return Response.json(
+      { error: CREATOR_MODEL_CATALOG_ERROR },
+      { status: 503, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
   if (!prompt || prompt.length > 4000) {
     return Response.json(
       { error: prompt ? "Story direction cannot exceed 4,000 characters." : "Describe the story you want to create." },
@@ -59,13 +70,13 @@ export async function POST(request: Request) {
       { status: 400, headers: { "Cache-Control": "no-store" } },
     );
   }
-  if (!IMAGE_MODELS.some((model) => model.value === imageModel)) {
+  if (!modelCatalog.imageModels.some((model) => model.value === imageModel)) {
     return Response.json(
       { error: "Choose a supported image model." },
       { status: 400, headers: { "Cache-Control": "no-store" } },
     );
   }
-  if (!VIDEO_MODELS.some((model) => model.value === videoModel)) {
+  if (!modelCatalog.videoModels.some((model) => model.value === videoModel)) {
     return Response.json(
       { error: "Choose a supported video model." },
       { status: 400, headers: { "Cache-Control": "no-store" } },

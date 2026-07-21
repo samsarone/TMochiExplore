@@ -17,10 +17,8 @@ import {
   Zap,
 } from "lucide-react";
 import type {
-  ExternalNarrativeVideoModel,
   GlobalStatusDetailedResponse,
   NarrativeVideoBranchingStatus,
-  TextToInteractiveVideoImageModel,
 } from "samsar-js";
 import { strToU8, Zip, ZipPassThrough } from "fflate";
 import Link from "next/link";
@@ -34,10 +32,10 @@ import {
 } from "../../lib/client-auth";
 import {
   CREATOR_REQUEST_STORAGE_KEY,
-  IMAGE_MODELS,
   SAMSAR_BILLING_URL,
-  VIDEO_MODELS,
   estimateInteractiveCredits,
+  type CreatorImageModelOption,
+  type CreatorVideoModelOption,
 } from "../../lib/creator-config";
 import { BranchPreview, type BranchPreviewHandle } from "./branch-preview";
 import { BranchTree, type BranchLayerSelection } from "./branch-tree";
@@ -62,8 +60,8 @@ type GenerateResponse = {
 type CreatorForm = {
   prompt: string;
   duration: number;
-  imageModel: TextToInteractiveVideoImageModel;
-  videoModel: ExternalNarrativeVideoModel;
+  imageModel: string;
+  videoModel: string;
   levels: number;
 };
 
@@ -308,23 +306,29 @@ function collectArtifactUrls(value: unknown, urls = new Set<string>(), key = "")
   return urls;
 }
 
-function normalizeStoredForm(value: unknown): CreatorForm | null {
+function normalizeStoredForm(
+  value: unknown,
+  imageModels: ReadonlyArray<CreatorImageModelOption>,
+  videoModels: ReadonlyArray<CreatorVideoModelOption>,
+): CreatorForm | null {
   if (!value || typeof value !== "object") return null;
   const stored = value as Partial<CreatorForm>;
   if (
     typeof stored.prompt !== "string" ||
+    typeof stored.imageModel !== "string" ||
+    typeof stored.videoModel !== "string" ||
     !Number.isFinite(Number(stored.duration)) ||
     !Number.isInteger(Number(stored.levels)) ||
-    !IMAGE_MODELS.some((model) => model.value === stored.imageModel) ||
-    !VIDEO_MODELS.some((model) => model.value === stored.videoModel)
+    !imageModels.some((model) => model.value === stored.imageModel) ||
+    !videoModels.some((model) => model.value === stored.videoModel)
   ) {
     return null;
   }
   return {
     prompt: stored.prompt.slice(0, 4000),
     duration: Math.min(180, Math.max(30, Number(stored.duration))),
-    imageModel: stored.imageModel as TextToInteractiveVideoImageModel,
-    videoModel: stored.videoModel as ExternalNarrativeVideoModel,
+    imageModel: stored.imageModel,
+    videoModel: stored.videoModel,
     levels: Math.min(3, Math.max(1, Number(stored.levels))),
   };
 }
@@ -352,18 +356,24 @@ export default function CreatorStudio({
   initialUser,
   initialSessionId = "",
   initialDraft = false,
+  initialImageModels,
+  initialVideoModels,
+  initialModelCatalogError = null,
 }: {
   initialUser: CreatorUser;
   initialSessionId?: string;
   initialDraft?: boolean;
+  initialImageModels: ReadonlyArray<CreatorImageModelOption>;
+  initialVideoModels: ReadonlyArray<CreatorVideoModelOption>;
+  initialModelCatalogError?: string | null;
 }) {
   const router = useRouter();
   const [user, setUser] = useState(initialUser);
   const [form, setForm] = useState<CreatorForm>({
     prompt: "",
     duration: 30,
-    imageModel: "NANOBANANA2",
-    videoModel: "COSMOS3SUPERI2V",
+    imageModel: initialImageModels[0]?.value || "",
+    videoModel: initialVideoModels[0]?.value || "",
     levels: DEFAULT_BRANCHING_LEVELS,
   });
   const [requestId, setRequestId] = useState(initialSessionId.trim());
@@ -379,7 +389,7 @@ export default function CreatorStudio({
   const [creatingDraft, setCreatingDraft] = useState(false);
   const [sessionChecked, setSessionChecked] = useState(false);
   const [polling, setPolling] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialModelCatalogError);
   const [playerOpen, setPlayerOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -392,8 +402,13 @@ export default function CreatorStudio({
   const creatorStorageKey = `${CREATOR_REQUEST_STORAGE_KEY}:${storageScope}`;
 
   const estimatedCredits = useMemo(
-    () => estimateInteractiveCredits(form.duration, form.levels, form.videoModel),
-    [form.duration, form.levels, form.videoModel],
+    () => estimateInteractiveCredits(
+      form.duration,
+      form.levels,
+      form.videoModel,
+      initialVideoModels,
+    ),
+    [form.duration, form.levels, form.videoModel, initialVideoModels],
   );
   const branching = getBranching(status) ?? getBranching(lastDetailedSnapshot);
   const branchLayerCount = new Set(
@@ -481,7 +496,11 @@ export default function CreatorStudio({
         window.localStorage.removeItem(creatorStorageKey);
         return;
       }
-      const savedForm = normalizeStoredForm(saved.form);
+      const savedForm = normalizeStoredForm(
+        saved.form,
+        initialImageModels,
+        initialVideoModels,
+      );
       const pending = saved.pendingSubmission;
       const savedPending =
         pending &&
@@ -498,7 +517,7 @@ export default function CreatorStudio({
     } catch {
       window.localStorage.removeItem(creatorStorageKey);
     }
-  }, [creatorStorageKey, requestId]);
+  }, [creatorStorageKey, initialImageModels, initialVideoModels, requestId]);
 
   useEffect(() => {
     latestRequestRef.current = requestId;
@@ -584,11 +603,11 @@ export default function CreatorStudio({
               duration: Number.isFinite(Number(nextDuration))
                 ? Math.min(180, Math.max(30, Number(nextDuration)))
                 : current.duration,
-              imageModel: IMAGE_MODELS.some((model) => model.value === nextImageModel)
-                ? nextImageModel as TextToInteractiveVideoImageModel
+              imageModel: initialImageModels.some((model) => model.value === nextImageModel)
+                ? nextImageModel as string
                 : current.imageModel,
-              videoModel: VIDEO_MODELS.some((model) => model.value === nextVideoModel)
-                ? nextVideoModel as ExternalNarrativeVideoModel
+              videoModel: initialVideoModels.some((model) => model.value === nextVideoModel)
+                ? nextVideoModel as string
                 : current.videoModel,
               levels: Number.isInteger(Number(nextLevels))
                 ? Math.min(3, Math.max(1, Number(nextLevels)))
@@ -637,7 +656,7 @@ export default function CreatorStudio({
       disposed = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [initialDraft, refreshUser, requestId]);
+  }, [initialDraft, initialImageModels, initialVideoModels, refreshUser, requestId]);
 
   async function generate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -647,6 +666,13 @@ export default function CreatorStudio({
     }
     if (!form.prompt.trim()) {
       setError("Describe what learners should understand or practice.");
+      return;
+    }
+    if (
+      !initialImageModels.some((model) => model.value === form.imageModel) ||
+      !initialVideoModels.some((model) => model.value === form.videoModel)
+    ) {
+      setError(initialModelCatalogError || "Choose currently supported Express models.");
       return;
     }
     if (user.generationCredits <= 0) {
@@ -1032,10 +1058,10 @@ export default function CreatorStudio({
                 <div className={styles.selectWrap}>
                   <select
                     value={form.imageModel}
-                    onChange={(event) => setForm((current) => ({ ...current, imageModel: event.target.value as TextToInteractiveVideoImageModel }))}
-                    disabled={inProgress || generating}
+                    onChange={(event) => setForm((current) => ({ ...current, imageModel: event.target.value }))}
+                    disabled={inProgress || generating || !initialImageModels.length}
                   >
-                    {IMAGE_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+                    {initialImageModels.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
                   </select>
                   <ChevronDown size={14} />
                 </div>
@@ -1045,10 +1071,10 @@ export default function CreatorStudio({
                 <div className={styles.selectWrap}>
                   <select
                     value={form.videoModel}
-                    onChange={(event) => setForm((current) => ({ ...current, videoModel: event.target.value as ExternalNarrativeVideoModel }))}
-                    disabled={inProgress || generating}
+                    onChange={(event) => setForm((current) => ({ ...current, videoModel: event.target.value }))}
+                    disabled={inProgress || generating || !initialVideoModels.length}
                   >
-                    {VIDEO_MODELS.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+                    {initialVideoModels.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
                   </select>
                   <ChevronDown size={14} />
                 </div>
@@ -1087,7 +1113,15 @@ export default function CreatorStudio({
             <button
               className={styles.generateButton}
               type="submit"
-              disabled={generating || !form.prompt.trim() || !sessionChecked || !isDraft || renderStarted}
+              disabled={
+                generating ||
+                !form.prompt.trim() ||
+                !form.imageModel ||
+                !form.videoModel ||
+                !sessionChecked ||
+                !isDraft ||
+                renderStarted
+              }
             >
                 {generating ? <LoaderCircle className={styles.spin} size={18} /> : <Sparkles size={18} />}
                 <span>{generating

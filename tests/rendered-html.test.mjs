@@ -232,6 +232,8 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
     samsarAuth,
     clientAuth,
     serverAuth,
+    creatorConfig,
+    creatorModelCatalog,
     packageJson,
   ] = await Promise.all([
     readFile(new URL("../app/creator/creator-studio.tsx", import.meta.url), "utf8"),
@@ -256,11 +258,16 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
     readFile(new URL("../lib/samsar-auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/client-auth.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/server-auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/creator-config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/creator-model-catalog.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
   assert.match(creatorPage, /verifySamsarUser/);
+  assert.match(creatorPage, /loadCreatorModelCatalog/);
+  assert.match(creatorPage, /initialImageModels=\{catalog\.imageModels\}/);
   assert.match(creatorSessionPage, /initialSessionId=\{normalizedSessionId\}/);
+  assert.match(creatorSessionPage, /loadCreatorModelCatalog/);
   assert.match(creatorSessionPage, /params:\s*Promise<\{ sessionId: string \}>/);
   assert.match(loginRoute, /users\/login/);
   assert.match(loginRoute, /\{ authToken, user:/);
@@ -278,6 +285,9 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
   assert.match(creatorLogin, /persistAuthToken\(result\.authToken\)/);
   assert.match(creatorLogin, /Authorization: `Bearer \$\{token\}`/);
   assert.match(generateRoute, /createV2TextToInteractiveVideo/);
+  assert.match(generateRoute, /getCreatorModelCatalog/);
+  assert.match(generateRoute, /modelCatalog\.imageModels\.some/);
+  assert.doesNotMatch(generateRoute, /IMAGE_MODELS/);
   assert.doesNotMatch(generateRoute, /\.postV2</);
   assert.match(generateRoute, /draft_session_id/);
   assert.match(generateRoute, /currentStatus !== "INIT"/);
@@ -301,6 +311,9 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
   assert.match(artifactRoute, /redirect:\s*"manual"/);
   assert.doesNotMatch(artifactRoute, /endsWith\("\.cloudfront\.net"\)/);
   assert.match(studio, /CREATOR_REQUEST_STORAGE_KEY/);
+  assert.match(studio, /initialImageModels\.map/);
+  assert.match(studio, /initialVideoModels\.map/);
+  assert.doesNotMatch(studio, /NANOBANANA2/);
   assert.match(studio, /savedSessionId !== requestId/);
   assert.match(studio, /levels: DEFAULT_BRANCHING_LEVELS/);
   assert.match(studio, /POLL_INTERVAL_MS/);
@@ -366,5 +379,10 @@ test("wires Creator Studio to shared auth, unified generation, detailed polling,
   assert.doesNotMatch(samsarClient, /apiKey[,\s:]/);
   assert.match(samsarAuth, /verifyWithConfiguredToken\(\)/);
   assert.doesNotMatch(samsarAuth, /verifyClientSession\(\{\s*authToken/);
+  assert.match(creatorModelCatalog, /video\/supported_models/);
+  assert.match(creatorModelCatalog, /cache: "no-store"/);
+  assert.doesNotMatch(creatorModelCatalog, /Authorization/);
+  assert.match(creatorConfig, /availability and request validation always come from Samsar/);
+  assert.doesNotMatch(creatorConfig, /NANOBANANA2/);
   assert.match(packageJson, /"fflate"/);
 });

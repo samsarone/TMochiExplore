@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { loadCreatorModelCatalog } from "../../../lib/creator-model-catalog";
 import { verifySamsarUser } from "../../../lib/samsar-auth";
 import CreatorLogin from "../creator-login";
 import CreatorStudio from "../creator-studio";
@@ -23,13 +24,18 @@ export default async function CreatorSessionPage({
   const redirectPath = `/creator/${encodeURIComponent(normalizedSessionId)}`;
   const user = await verifySamsarUser();
 
-  return user ? (
+  if (!user) return <CreatorLogin redirectPath={redirectPath} />;
+
+  const { catalog, error } = await loadCreatorModelCatalog();
+
+  return (
     <CreatorStudio
       initialUser={user}
       initialSessionId={normalizedSessionId}
       initialDraft={draft === "1"}
+      initialImageModels={catalog.imageModels}
+      initialVideoModels={catalog.videoModels}
+      initialModelCatalogError={error}
     />
-  ) : (
-    <CreatorLogin redirectPath={redirectPath} />
   );
 }
