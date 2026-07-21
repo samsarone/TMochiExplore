@@ -11,8 +11,8 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = incoming.get("x-forwarded-host") || incoming.get("host") || "localhost:3001";
   const protocol = incoming.get("x-forwarded-proto") || (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "TMochiLearn — Interactive Cinema";
-  const description = "Watch stories that change with every choice. A futuristic interactive film experience powered by Samsar.";
+  const title = "TMochiLearn — Interactive Learning";
+  const description = "Learn through interactive lessons that change with every choice, powered by Samsar.";
 
   return {
     metadataBase: new URL(origin),

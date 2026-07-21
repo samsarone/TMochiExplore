@@ -14,16 +14,17 @@ async function render(pathname = "/") {
   );
 }
 
-test("server-renders the TMochiLearn interactive cinema landing page", async () => {
+test("server-renders the TMochiLearn interactive learning landing page", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>TMochiLearn — Interactive Cinema<\/title>/i);
-  assert.match(html, /Don.t just watch/i);
-  assert.match(html, /Don.t just watch\.\s*<em>Decide\.<\/em>/i);
-  assert.match(html, /Interactive stories/i);
+  assert.match(html, /<title>TMochiLearn — Interactive Learning<\/title>/i);
+  assert.match(html, /Learn technical topics\.\s*<em>Deeply\.<\/em>/i);
+  assert.match(html, /Every alternative outcome, explained/i);
+  assert.match(html, /Every path, followed/i);
+  assert.match(html, /Interactive lessons/i);
   assert.match(html, /lucide-wand-sparkles/i);
   assert.match(html, />Create<\/button>/i);
   assert.match(html, /<nav[^>]*aria-label="Main navigation"/i);
