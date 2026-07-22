@@ -17,12 +17,12 @@ Every path belongs to one connected learning experience. Learners can explore
 different approaches, see the consequences of each choice, and build a deeper
 understanding of educational and technical subjects.
 
-### Built with Codex
-
-> Built with [Codex](https://openai.com/codex/) using GPT 5.6 Sol in High and Ultra
-> settings, with manual QA, verification, and code debugging.
->
-> Submission for the [OpenAI Devpost hackathon](https://openai.devpost.com/).
+<p>
+  <sub>
+    Built with <a href="https://openai.com/codex/">Codex</a> using GPT 5.6 Sol in High and Ultra settings, with manual QA, verification, and code debugging.<br />
+    Submission for the <a href="https://openai.devpost.com/">OpenAI Devpost hackathon</a>.
+  </sub>
+</p>
 
 ## Don’t just watch. Explore.
 
